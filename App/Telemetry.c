@@ -5,12 +5,32 @@
  *  Author    : Final Project
  *
  *  500 ms non-blocking UART telemetry using a periodic timer flag.
- *  UART polling for debug output is explicitly allowed by the spec.
+ *
+ *  [FIX — DMA Telemetry]
+ *  Previous version used blocking Usart1_TransmitString() which
+ *  internally loops on USART_SR.TXE for each byte, burning CPU
+ *  cycles for the entire string length every 500 ms.  This wasted
+ *  the DMA2 Stream7 that was already initialized in main.c via
+ *  Dma_Usart1TxInit().
+ *
+ *  Now uses Dma_Usart1TxStart() which:
+ *    1. Loads DMA2_Stream7->M0AR with the source buffer address
+ *    2. Loads DMA2_Stream7->NDTR with the byte count
+ *    3. Clears TC/TE/HT/DME/FE flags in DMA2->HIFCR
+ *    4. Sets EN bit in DMA2_Stream7->CR
+ *    5. Enables USART1_CR3.DMAT
+ *  The DMA engine then transfers each byte to USART1->DR
+ *  autonomously — zero CPU overhead for the actual transmission.
+ *
+ *  IMPORTANT: The `line[]` buffer must be static, not stack-local,
+ *  because the DMA reads from it asynchronously after this function
+ *  returns.  A stack buffer would be overwritten by subsequent calls.
  */
 
 #include "Telemetry.h"
 #include "Usart.h"
 #include "Timer.h"
+#include "Dma.h"
 #include "Board_Config.h"
 #include "Spi_Protocol.h"
 
@@ -18,6 +38,11 @@
 /*  Private state                                                     */
 /* ------------------------------------------------------------------ */
 static volatile uint8 telemetryReady = 0;
+
+/* [FIX — DMA Telemetry]
+ * Static buffer so DMA can read it asynchronously after we return.
+ * Must NOT be on the stack. */
+static char telemetryLine[128];
 
 /* Timer callback sets the flag (runs in ISR context) */
 static void Telemetry_TimerCallback(void) {
@@ -62,6 +87,13 @@ static void appendStr(char *buf, uint32 *pos, const char *s) {
     }
 }
 
+/* Custom strlen — standard library not available in bare-metal */
+static uint16 Telemetry_Strlen(const char *s) {
+    uint16 len = 0;
+    while (s[len] != '\0') { len++; }
+    return len;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Public API                                                         */
 /* ------------------------------------------------------------------ */
@@ -80,35 +112,49 @@ boolean Telemetry_Update(const ElevatorContext *elevA,
     if (!telemetryReady) return FALSE;
     telemetryReady = 0;
 
-    char line[128];
+    /* [FIX — DMA Telemetry]
+     * Guard: if the previous DMA transfer is still in progress, skip
+     * this report rather than corrupting the buffer mid-transfer. */
+    if (Dma_Usart1TxBusy()) return FALSE;
+
     uint32 p = 0;
 
-    appendStr(line, &p, "[TEL] A:");
-    appendStr(line, &p, StateStr((uint8)elevA->state));
-    appendStr(line, &p, " F");
-    appendFloor(line, &p, elevA->currentFloor);
+    appendStr(telemetryLine, &p, "[TEL] A:");
+    appendStr(telemetryLine, &p, StateStr((uint8)elevA->state));
+    appendStr(telemetryLine, &p, " F");
+    appendFloor(telemetryLine, &p, elevA->currentFloor);
 
     if (elevB) {
-        appendStr(line, &p, " | B:");
-        appendStr(line, &p, StateStr((uint8)elevB->state));
-        appendStr(line, &p, " F");
-        appendFloor(line, &p, elevB->currentFloor);
+        appendStr(telemetryLine, &p, " | B:");
+        appendStr(telemetryLine, &p, StateStr((uint8)elevB->state));
+        appendStr(telemetryLine, &p, " F");
+        appendFloor(telemetryLine, &p, elevB->currentFloor);
     }
 
-    appendStr(line, &p, " | SPI:");
-    appendStr(line, &p, commOk ? "OK" : "FAULT");
+    appendStr(telemetryLine, &p, " | SPI:");
+    appendStr(telemetryLine, &p, commOk ? "OK" : "FAULT");
 
-    appendStr(line, &p, " | Hall:0x");
+    appendStr(telemetryLine, &p, " | Hall:0x");
     /* Hex nibble for hall calls */
     uint8 hi = (hallCalls >> 4) & 0x0F;
     uint8 lo = hallCalls & 0x0F;
-    line[p++] = (hi < 10) ? ('0' + hi) : ('A' + hi - 10);
-    line[p++] = (lo < 10) ? ('0' + lo) : ('A' + lo - 10);
+    telemetryLine[p++] = (hi < 10) ? ('0' + hi) : ('A' + hi - 10);
+    telemetryLine[p++] = (lo < 10) ? ('0' + lo) : ('A' + lo - 10);
 
-    appendStr(line, &p, "\r\n");
-    line[p] = '\0';
+    appendStr(telemetryLine, &p, "\r\n");
+    telemetryLine[p] = '\0';
 
-    /* UART polling transmit (allowed by spec for debug) */
-    Usart1_TransmitString(line);
+    /* [FIX — DMA Telemetry]
+     * Trigger DMA2 Stream7 → USART1_DR transfer.
+     * Dma_Usart1TxStart() performs:
+     *   DMA2_Stream7->M0AR = (uint32)telemetryLine;
+     *   DMA2_Stream7->NDTR = len;
+     *   DMA2->HIFCR = clear all Stream7 flags;
+     *   SET_BIT(DMA2_Stream7->CR, EN);
+     *   SET_BIT(USART1->CR3, DMAT);
+     * Zero CPU cycles consumed for the actual byte transmission. */
+    Dma_Usart1TxStart((const uint8 *)telemetryLine,
+                      Telemetry_Strlen(telemetryLine));
     return TRUE;
 }
+

@@ -168,24 +168,56 @@ void Dispatcher_Run(ElevatorContext *elevA, ElevatorContext *elevB,
     uint32 pm;
 
     /* ------ Cleanup: clear completed assignments ------ */
-    /* An assignment is "completed" when the elevator no longer has
-     * the target floor in its pending floors mask (cabin | assigned). */
+    /* [FIX — Dispatcher Call-Clearing Overlap]
+     *
+     * CRITICAL BUG (previous version):  The cleanup mapped each hall call
+     * to a floorBit via `1U << (floor-1)`.  Both HALL_U2 (bit 2) and
+     * HALL_D2 (bit 1) map to floorBit=2 (floor 2).  When the elevator
+     * arrives at floor 2 moving UP, Elevator_ClearCurrentFloor() clears
+     * the floor-2 bit in its pending mask.  The old check:
+     *     if (!(GetPendingFloors(elev) & floorBit))  → clear assignment
+     * would erase BOTH HALL_U2 and HALL_D2 — the DOWN passenger is lost.
+     *
+     * FIX: A directional hall call HALL_Xn is cleared ONLY when:
+     *   1. The elevator is AT the call's target floor, AND
+     *   2. The elevator arrived FROM the correct direction (its current
+     *      direction matches the call's direction), OR it is now IDLE
+     *      (meaning it has completed its path and stopped here), OR
+     *      it is in DOORS_OPEN / DOOR_CLOSING at that floor.
+     *
+     * This ensures HALL_U2 is cleared only when the elevator is at F2
+     * having been moving UP, and HALL_D2 only when at F2 moving DOWN.
+     */
     for (i = 0; i < 6; i++) {
         uint8 bit = (1U << i);
-        uint8 floorBit = (1U << (hallCallTable[i].floor - 1));
+        uint8 callFloor = hallCallTable[i].floor;
+        uint8 callDir   = hallCallTable[i].direction;
 
         if (assignedToA & bit) {
-            if (!(Elevator_GetPendingFloors(elevA) & floorBit)) {
-                pm = Enter_Critical();
-                assignedToA &= ~bit;
-                Exit_Critical(pm);
+            if (elevA->currentFloor == callFloor) {
+                /* Elevator is at the target floor.  Clear only if:
+                 * - Elevator's travel direction matches the call direction, OR
+                 * - Elevator is IDLE / DOORS_OPEN / DOOR_CLOSING (path done) */
+                if (elevA->direction == callDir ||
+                    elevA->state == ELEV_IDLE ||
+                    elevA->state == ELEV_DOORS_OPEN ||
+                    elevA->state == ELEV_DOOR_CLOSING) {
+                    pm = Enter_Critical();
+                    assignedToA &= ~bit;
+                    Exit_Critical(pm);
+                }
             }
         }
         if (!commFault && (assignedToB & bit)) {
-            if (!(Elevator_GetPendingFloors(elevB) & floorBit)) {
-                pm = Enter_Critical();
-                assignedToB &= ~bit;
-                Exit_Critical(pm);
+            if (elevB->currentFloor == callFloor) {
+                if (elevB->direction == callDir ||
+                    elevB->state == ELEV_IDLE ||
+                    elevB->state == ELEV_DOORS_OPEN ||
+                    elevB->state == ELEV_DOOR_CLOSING) {
+                    pm = Enter_Critical();
+                    assignedToB &= ~bit;
+                    Exit_Critical(pm);
+                }
             }
         }
     }

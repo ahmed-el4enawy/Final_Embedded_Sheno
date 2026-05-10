@@ -214,12 +214,78 @@ static void SlaveRxCallback(uint8 *buf, uint8 len) {
 #define SYSTICK_CSR_TICKINT     (1UL << 1)
 #define SYSTICK_CSR_CLKSOURCE   (1UL << 2)   /* 1 = processor clock */
 
-/* HSI = 16 MHz by default on STM32F4 (no PLL assumed) */
-#define SYSTICK_CLOCK_HZ   16000000UL
+/* ------------------------------------------------------------------ */
+/*  [FIX — SysTick Core Clock Hardcoding]                              */
+/*                                                                      */
+/*  Previous code:  #define SYSTICK_CLOCK_HZ  16000000UL               */
+/*  This is violently wrong if Rcc_Init() configures the PLL.          */
+/*  On STM32F401 the PLL can push SYSCLK to 84 MHz; a 16 MHz math     */
+/*  base would fire SysTick every 0.19 ms instead of 1.0 ms.           */
+/*                                                                      */
+/*  Solution: Read the RCC_CFGR.SWS[1:0] bits to determine the active  */
+/*  system clock source, then compute the true frequency:               */
+/*   SWS=00  → HSI  = 16 MHz                                          */
+/*   SWS=01  → HSE  = HSE_VALUE (typically 8 or 25 MHz)               */
+/*   SWS=10  → PLL  → decode PLLCFGR (M, N, P) to get VCO/P          */
+/* ------------------------------------------------------------------ */
+
+/* RCC register addresses (STM32F4xx) */
+#define RCC_BASE_ADDR       0x40023800UL
+#define RCC_CR_REG          (*(volatile uint32 *)(RCC_BASE_ADDR + 0x00UL))
+#define RCC_PLLCFGR_REG     (*(volatile uint32 *)(RCC_BASE_ADDR + 0x04UL))
+#define RCC_CFGR_REG        (*(volatile uint32 *)(RCC_BASE_ADDR + 0x08UL))
+
+/* Default oscillator frequencies */
+#define HSI_VALUE_HZ        16000000UL
+#define HSE_VALUE_HZ         8000000UL   /* adjust to match actual crystal */
+
+/**
+ * @brief  Dynamically compute the current SYSCLK frequency from
+ *         the RCC_CFGR SWS bits and (if PLL) the PLLCFGR register.
+ * @return System clock frequency in Hz.
+ */
+static uint32 Rcc_GetSystemClock(void) {
+    uint32 cfgr = RCC_CFGR_REG;
+    uint8  sws  = (uint8)((cfgr >> 2) & 0x03U);   /* SWS[1:0] = bits [3:2] */
+
+    switch (sws) {
+    case 0U:   /* HSI oscillator */
+        return HSI_VALUE_HZ;
+
+    case 1U:   /* HSE oscillator */
+        return HSE_VALUE_HZ;
+
+    case 2U: { /* PLL */
+        /* Decode PLLCFGR:
+         *   PLLM[5:0]  = bits  [5:0]   → divider  2..63
+         *   PLLN[8:0]  = bits [14:6]   → multiplier 50..432
+         *   PLLP[1:0]  = bits [17:16]  → 0→2, 1→4, 2→6, 3→8
+         *   PLLSRC     = bit  [22]     → 0=HSI, 1=HSE
+         */
+        uint32 pllcfgr = RCC_PLLCFGR_REG;
+        uint32 pllm = pllcfgr & 0x3FUL;
+        uint32 plln = (pllcfgr >> 6)  & 0x1FFUL;
+        uint32 pllp = (((pllcfgr >> 16) & 0x03UL) + 1UL) * 2UL;  /* 2,4,6,8 */
+        uint32 pllsrc = (pllcfgr >> 22) & 0x01UL;
+
+        uint32 inputClk = pllsrc ? HSE_VALUE_HZ : HSI_VALUE_HZ;
+
+        /* Guard against divide-by-zero (should never happen in practice) */
+        if (pllm == 0) pllm = 1;
+
+        /* SYSCLK = (inputClk / PLLM) * PLLN / PLLP */
+        return (inputClk / pllm) * plln / pllp;
+    }
+
+    default:   /* Should not occur */
+        return HSI_VALUE_HZ;
+    }
+}
 
 static void SysTick_Init(void) {
-    SYSTICK_RVR = (SYSTICK_CLOCK_HZ / 1000UL) - 1UL;   /* 1 ms reload */
-    SYSTICK_CVR = 0;                                     /* clear current */
+    uint32 sysClkHz = Rcc_GetSystemClock();
+    SYSTICK_RVR = (sysClkHz / 1000UL) - 1UL;   /* 1 ms reload */
+    SYSTICK_CVR = 0;                             /* clear current value */
     SYSTICK_CSR = SYSTICK_CSR_CLKSOURCE
                 | SYSTICK_CSR_TICKINT
                 | SYSTICK_CSR_ENABLE;
@@ -359,6 +425,15 @@ int main(void) {
                 /* [FIX #4] Check elapsed time since last valid frame */
                 uint32 elapsed = sysTickMs - spiLastGoodRxTick;
                 if (elapsed >= SPI_TIMEOUT_MS) {
+                    if (!spiCommFault) {
+                        /* [FIX — Sequence Wrap-Around]
+                         * Invalidate spiLastRxSeq on fault entry so the
+                         * first valid recovery frame is never dropped as
+                         * a "duplicate" due to 8-bit wrap-around collision.
+                         * 0xFF cannot naturally follow a valid sequence
+                         * without at least one accepted frame in between. */
+                        spiLastRxSeq = 0xFF;
+                    }
                     spiCommFault = 1;
                 }
             }
@@ -395,6 +470,17 @@ int main(void) {
             if (elapsed >= SPI_TIMEOUT_MS) {
                 if (!spiCommFault) {
                     spiCommFault = 1;
+
+                    /* [FIX — Sequence Wrap-Around]
+                     * Invalidate spiLastRxSeq so the first recovery frame
+                     * post-fault is never dropped as a duplicate.  If the
+                     * fault persists for exactly 256×50ms = 12.8s, the
+                     * remote sequence byte wraps back to the stale value
+                     * in spiLastRxSeq.  Setting 0xFF breaks the collision
+                     * because ParseRemoteFrame() will accept any sequence
+                     * that is != 0xFF. */
+                    spiLastRxSeq = 0xFF;
+
                     /* [FIX #3] Force slave into independent/emergency mode.
                      * Clears assigned calls, stops motor, ignores external
                      * commands until SPI link recovers.

@@ -97,10 +97,23 @@ void Elevator_EmergencyClear(ElevatorContext *ctx) {
 }
 
 void Elevator_DoorTimerExpired(ElevatorContext *ctx) {
+    /* [FIX #5 — Split State Transition]
+     *
+     * CRITICAL: This function is called from a TIM5 ISR (DoorTimerCb)
+     * which fires asynchronously.  The previous implementation also
+     * mutated ctx->state here:
+     *     if (ctx->state == ELEV_DOORS_OPEN)
+     *         ctx->state = ELEV_DOOR_CLOSING;
+     *
+     * That created a dual-master state mutation.  The ISR could fire
+     * between any two instructions in Elevator_Run(), including in the
+     * middle of the ELEV_DOORS_OPEN case, corrupting the transition
+     * logic.  The FSM's ELEV_DOORS_OPEN handler ALREADY performs:
+     *     if (!ctx->doorTimerActive) ctx->state = ELEV_DOOR_CLOSING;
+     *
+     * Therefore the ISR must ONLY set the flag.  The synchronous FSM
+     * is the sole owner of state transitions. */
     ctx->doorTimerActive = 0;
-    if (ctx->state == ELEV_DOORS_OPEN) {
-        ctx->state = ELEV_DOOR_CLOSING;
-    }
 }
 
 boolean Elevator_ShouldStopAtFloor(const ElevatorContext *ctx, uint8 floor) {
