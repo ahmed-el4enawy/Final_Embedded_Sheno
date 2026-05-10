@@ -9,6 +9,11 @@
  *
  *  Board A (Master): Elevator A FSM + Dispatcher + SPI Master + Hallway Buttons
  *  Board B (Slave) : Elevator B FSM + SPI Slave (receives hall calls from master)
+ *
+ *  [FIX #1] PWM speed ramping uses sysTickMs for non-blocking timestamps.
+ *  [FIX #3] Slave enters ELEV_INDEPENDENT on SPI comm fault.
+ *  [FIX #4] SysTick 1 ms counter replaces telemetry-gated timeout on slave.
+ *  [FIX #5] Button debounce also uses sysTickMs (see Button_Handlers.c).
  */
 
 #include "Std_Types.h"
@@ -37,6 +42,15 @@
 #endif
 
 /* ================================================================== */
+/*  [FIX #1/#4/#5] Global 1 ms SysTick counter                        */
+/*  Used by:                                                           */
+/*   - PWM ramp (Elevator_FSM.c, [FIX #1])                           */
+/*   - Slave SPI timeout detection (this file, [FIX #4])              */
+/*   - Button debounce (Button_Handlers.c, [FIX #5])                  */
+/* ================================================================== */
+volatile uint32 sysTickMs = 0;
+
+/* ================================================================== */
 /*  Global state                                                       */
 /* ================================================================== */
 
@@ -56,7 +70,9 @@ static volatile uint8 spiRxReady      = 0;   /* set when valid frame  */
 static volatile uint8 spiCommFault    = 0;   /* set on timeout        */
 static volatile uint8 spiSequence     = 0;
 static volatile uint8 spiLastRxSeq    = 0xFF;
-static volatile uint32 spiTimeoutCounter = 0;
+
+/* [FIX #4] SPI timeout tracked via sysTickMs — NOT telemetry period */
+static volatile uint32 spiLastGoodRxTick = 0;
 
 /* Door timer callback (shared between master/slave) */
 /* Forward declaration — defined after localElev */
@@ -169,9 +185,53 @@ static void SpiExchangeTimerCb(void) {
 static void SlaveRxCallback(uint8 *buf, uint8 len) {
     (void)len;
     spiRxReady = 1;
-    spiTimeoutCounter = 0;
+    /* [FIX #4] Record the SysTick ms of last successful SPI reception */
+    spiLastGoodRxTick = sysTickMs;
 }
 #endif
+
+/* ================================================================== */
+/*  [FIX #1/#4/#5] SysTick initialisation and ISR                      */
+/*                                                                      */
+/*  Configures SysTick for a 1 ms interrupt.  This provides a global   */
+/*  free-running millisecond counter used by:                           */
+/*   - PWM speed ramping (non-blocking duty step timing)               */
+/*   - Slave SPI timeout detection (accurate to 1 ms)                  */
+/*   - EXTI button debounce (50 ms timestamp checks)                   */
+/*                                                                      */
+/*  SysTick registers (Cortex-M4 — always available, no RCC needed):  */
+/*   SYST_CSR   @ 0xE000E010  (Control and Status)                     */
+/*   SYST_RVR   @ 0xE000E014  (Reload Value)                           */
+/*   SYST_CVR   @ 0xE000E018  (Current Value)                          */
+/* ================================================================== */
+
+#define SYSTICK_CSR   (*(volatile uint32 *)0xE000E010UL)
+#define SYSTICK_RVR   (*(volatile uint32 *)0xE000E014UL)
+#define SYSTICK_CVR   (*(volatile uint32 *)0xE000E018UL)
+
+/* Bit definitions for SYST_CSR */
+#define SYSTICK_CSR_ENABLE      (1UL << 0)
+#define SYSTICK_CSR_TICKINT     (1UL << 1)
+#define SYSTICK_CSR_CLKSOURCE   (1UL << 2)   /* 1 = processor clock */
+
+/* HSI = 16 MHz by default on STM32F4 (no PLL assumed) */
+#define SYSTICK_CLOCK_HZ   16000000UL
+
+static void SysTick_Init(void) {
+    SYSTICK_RVR = (SYSTICK_CLOCK_HZ / 1000UL) - 1UL;   /* 1 ms reload */
+    SYSTICK_CVR = 0;                                     /* clear current */
+    SYSTICK_CSR = SYSTICK_CSR_CLKSOURCE
+                | SYSTICK_CSR_TICKINT
+                | SYSTICK_CSR_ENABLE;
+}
+
+/**
+ * @brief  SysTick ISR — increments the global millisecond counter.
+ *         The symbol SysTick_Handler is the standard Cortex-M vector name.
+ */
+void SysTick_Handler(void) {
+    sysTickMs++;
+}
 
 /* ================================================================== */
 /*  Peripheral initialisation                                          */
@@ -195,6 +255,9 @@ static void System_Init(void) {
     Rcc_Enable(RCC_USART1);
     Rcc_Enable(RCC_SPI1);
     Rcc_Enable(RCC_DMA2);
+
+    /* --- [FIX #1/#4/#5] SysTick — 1 ms global tick --- */
+    SysTick_Init();
 
     /* --- USART1 --- */
     Usart1_Init();
@@ -239,6 +302,9 @@ static void System_Init(void) {
 
     /* --- Telemetry (500 ms periodic) --- */
     Telemetry_Init();
+
+    /* [FIX #4] Initialise last-good-rx timestamp to now */
+    spiLastGoodRxTick = sysTickMs;
 
 #if IS_MASTER_BOARD
     /* --- 50 ms SPI exchange timer --- */
@@ -291,10 +357,11 @@ int main(void) {
             /* Parse remote frame */
             if (ParseRemoteFrame()) {
                 spiCommFault = 0;
-                spiTimeoutCounter = 0;
+                spiLastGoodRxTick = sysTickMs;  /* [FIX #4] reset timeout */
             } else {
-                spiTimeoutCounter += SPI_EXCHANGE_PERIOD_MS;
-                if (spiTimeoutCounter >= SPI_TIMEOUT_MS) {
+                /* [FIX #4] Check elapsed time since last valid frame */
+                uint32 elapsed = sysTickMs - spiLastGoodRxTick;
+                if (elapsed >= SPI_TIMEOUT_MS) {
                     spiCommFault = 1;
                 }
             }
@@ -309,6 +376,13 @@ int main(void) {
             spiRxReady = 0;
             if (ParseRemoteFrame()) {
                 spiCommFault = 0;
+                spiLastGoodRxTick = sysTickMs;  /* [FIX #4] reset timeout */
+
+                /* [FIX #3] If we were in independent mode and comm is back,
+                 * exit independent mode and resume normal operation. */
+                if (localElev.state == ELEV_INDEPENDENT) {
+                    Elevator_ExitIndependentMode(&localElev);
+                }
             }
 
             /* Refresh TX buffer for next exchange */
@@ -316,12 +390,23 @@ int main(void) {
             Spi_SlavePreload(SPI_1, spiTxBuf, SPI_FRAME_LEN);
         }
 
-        /* Slave comm-fault: if no valid frame for SPI_TIMEOUT_MS,
-         * enter independent mode (emergency-like). The
-         * spiTimeoutCounter is incremented by the telemetry timer
-         * every 500 ms and reset on each valid SPI frame.  */
-        if (!spiCommFault && spiTimeoutCounter >= SPI_TIMEOUT_MS) {
-            spiCommFault = 1;
+        /* [FIX #4] Slave comm-fault: accurate 1 ms SysTick-based timeout.
+         * Checks elapsed time since last valid SPI frame EVERY main-loop
+         * iteration — no longer gated by the 500 ms telemetry period. */
+        {
+            uint32 elapsed = sysTickMs - spiLastGoodRxTick;
+            if (elapsed >= SPI_TIMEOUT_MS) {
+                if (!spiCommFault) {
+                    spiCommFault = 1;
+                    /* [FIX #3] Force slave into independent/emergency mode.
+                     * Clears assigned calls, stops motor, ignores external
+                     * commands until SPI link recovers. */
+                    Elevator_EnterIndependentMode(&localElev);
+                }
+            } else {
+                /* Link is still healthy */
+                spiCommFault = 0;
+            }
         }
 #endif
 
@@ -331,15 +416,8 @@ int main(void) {
                          spiCommFault ? FALSE : TRUE,
                          Dispatcher_GetPendingHallCalls());
 #else
-        {
-            boolean didSend = Telemetry_Update(&localElev, (ElevatorContext *)0,
-                                                spiCommFault ? FALSE : TRUE, 0);
-            /* Slave: increment comm-fault counter each telemetry cycle
-             * (500 ms).  SlaveRxCallback resets it on each valid frame. */
-            if (didSend) {
-                spiTimeoutCounter += TELEMETRY_PERIOD_MS;
-            }
-        }
+        Telemetry_Update(&localElev, (ElevatorContext *)0,
+                         spiCommFault ? FALSE : TRUE, 0);
 #endif
     }
 

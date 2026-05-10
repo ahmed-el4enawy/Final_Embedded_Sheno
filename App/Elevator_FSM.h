@@ -23,8 +23,22 @@ typedef enum {
     ELEV_ARRIVING,          /* Decelerating at target floor */
     ELEV_DOORS_OPEN,
     ELEV_DOOR_CLOSING,
-    ELEV_EMERGENCY_STOP
+    ELEV_EMERGENCY_STOP,
+    ELEV_INDEPENDENT        /* [FIX #3] Slave independent mode on SPI comm fault */
 } ElevatorState;
+
+/* ============================================================ */
+/*  PWM ramp context  [FIX #1]                                   */
+/*  Non-blocking speed ramping via SysTick timestamp checks.     */
+/* ============================================================ */
+#define RAMP_STEP_PERCENT    5U     /* duty change per step          */
+#define RAMP_STEP_INTERVAL   20U    /* ms between ramp steps         */
+
+typedef struct {
+    volatile uint8  currentDuty;    /* actual duty cycle right now    */
+    volatile uint8  targetDuty;     /* desired duty cycle             */
+    volatile uint32 lastStepTick;   /* SysTick ms timestamp of last step */
+} PwmRampContext;
 
 /* ============================================================ */
 /*  Elevator run-time context  (all shared fields are volatile) */
@@ -41,6 +55,7 @@ typedef struct {
     volatile uint8          doorOpen;        /* 1 = doors are open              */
     volatile uint8          doorTimerActive; /* 1 = waiting for door close      */
     DoorTimerStartFunc      startDoorTimer;  /* function to start door timer    */
+    PwmRampContext          ramp;            /* [FIX #1] PWM speed ramp state   */
 } ElevatorContext;
 
 /* ============================================================ */
@@ -105,5 +120,18 @@ uint8 Elevator_GetPacketState(const ElevatorContext *ctx);
  * @brief  Get combined pending request mask (cabin | assigned).
  */
 uint8 Elevator_GetPendingFloors(const ElevatorContext *ctx);
+
+/**
+ * @brief  [FIX #3] Enter independent/emergency mode on SPI comm fault.
+ *         Clears external (assigned) calls, stops motor, transitions
+ *         to ELEV_INDEPENDENT.  Elevator will only service cabin
+ *         requests (if any) in a degraded mode.
+ */
+void Elevator_EnterIndependentMode(ElevatorContext *ctx);
+
+/**
+ * @brief  [FIX #3] Exit independent mode (e.g. when SPI link recovers).
+ */
+void Elevator_ExitIndependentMode(ElevatorContext *ctx);
 
 #endif /* ELEVATOR_FSM_H */

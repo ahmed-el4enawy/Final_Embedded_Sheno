@@ -11,8 +11,8 @@
  *    1-9 Perfect     – elevator moving toward floor in SAME direction
  *   50+  Idle near   – elevator idle but not at the floor
  *  100+  Passed      – same direction but already passed the floor
- *  200+  Opposite    – moving away from requested direction
- *  -1    DO NOT      – don't assign (opposite still has pending stops)
+ *   -1   DO NOT      – don't assign (opposite dir or emergency)
+ *                       [FIX #2] Opposite direction now returns -1
  *
  *  Forbidden: round-robin, nearest-idle-only.
  */
@@ -54,14 +54,19 @@ static sint16 abs16(sint16 v) { return (v < 0) ? -v : v; }
 /* ------------------------------------------------------------------ */
 /*  Score one elevator for one hall call                               */
 /*  Returns 0..300 (lower = better).  -1 means don't assign.         */
+/*                                                                     */
+/*  [FIX #2] Opposite Direction now returns -1 (DO NOT ASSIGN)        */
+/*  per the rubric: "Opposite Dir: Elevator is moving away from the   */
+/*  call direction. Do NOT assign until it finishes its current path."*/
 /* ------------------------------------------------------------------ */
 static sint16 Dispatcher_Score(const ElevatorContext *elev,
                                uint8 targetFloor, uint8 callDir) {
 
     sint16 dist = abs16((sint16)elev->currentFloor - (sint16)targetFloor);
 
-    /* ---- Emergency or comm-fault: unavailable ---- */
+    /* ---- Emergency, independent, or comm-fault: unavailable ---- */
     if (elev->emergencyStop) return -1;
+    if (elev->state == ELEV_INDEPENDENT) return -1;     /* [FIX #3] */
 
     /* ---- Immediate: already at floor AND idle ---- */
     if (elev->state == ELEV_IDLE && elev->currentFloor == targetFloor) {
@@ -92,15 +97,18 @@ static sint16 Dispatcher_Score(const ElevatorContext *elev,
         }
     }
 
-    /* ---- Opposite direction: moving away ---- */
+    /* ---- [FIX #2] Opposite direction: DO NOT ASSIGN ---- */
+    /* Rubric: "Opposite Dir: Elevator is moving away from the call   */
+    /* direction.  Do NOT assign until it finishes its current path." */
     if ((elev->state == ELEV_MOVING_UP   && callDir == DIR_DOWN) ||
         (elev->state == ELEV_MOVING_DOWN && callDir == DIR_UP)) {
-        return (sint16)(200 + dist);
+        return -1;   /* [FIX #2] was (200 + dist), now DO NOT ASSIGN */
     }
 
     /* ---- Moving in same direction, opposite call direction ---- */
+    /* e.g. moving up, call is DIR_DOWN but floor is above us      */
     if (elev->state == ELEV_MOVING_UP || elev->state == ELEV_MOVING_DOWN) {
-        return (sint16)(150 + dist);
+        return -1;   /* [FIX #2] conservative: also DO NOT ASSIGN    */
     }
 
     /* ---- Idle (not at target floor): nearest idle ---- */
@@ -187,7 +195,9 @@ void Dispatcher_Run(ElevatorContext *elevA, ElevatorContext *elevB,
         sint16 scoreA = Dispatcher_Score(elevA, tgtFloor, tgtDir);
         sint16 scoreB = Dispatcher_Score(elevB, tgtFloor, tgtDir);
 
-        /* If both negative, leave pending for retry later */
+        /* [FIX #2] If BOTH return -1, leave the call PENDING.
+         * It will be re-evaluated on the next Dispatcher_Run() call
+         * when one of the elevators finishes its path and becomes Idle. */
         if (scoreA < 0 && scoreB < 0) continue;
 
         pm = Enter_Critical();

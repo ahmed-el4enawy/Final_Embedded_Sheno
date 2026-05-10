@@ -39,6 +39,7 @@ static const char *StateStr(uint8 s) {
         case ELEV_DOORS_OPEN:    return "DOOR_O";
         case ELEV_DOOR_CLOSING:  return "DOOR_C";
         case ELEV_EMERGENCY_STOP:return "EMERG!";
+        case ELEV_INDEPENDENT:   return "INDEP";   /* [FIX #3] */
         default:                 return "???";
     }
 }
