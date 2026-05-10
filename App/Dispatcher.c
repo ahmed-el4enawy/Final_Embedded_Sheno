@@ -167,6 +167,29 @@ void Dispatcher_Run(ElevatorContext *elevA, ElevatorContext *elevB,
     uint8 i;
     uint32 pm;
 
+    /* ------ Cleanup: clear completed assignments ------ */
+    /* An assignment is "completed" when the elevator no longer has
+     * the target floor in its pending floors mask (cabin | assigned). */
+    for (i = 0; i < 6; i++) {
+        uint8 bit = (1U << i);
+        uint8 floorBit = (1U << (hallCallTable[i].floor - 1));
+
+        if (assignedToA & bit) {
+            if (!(Elevator_GetPendingFloors(elevA) & floorBit)) {
+                pm = Enter_Critical();
+                assignedToA &= ~bit;
+                Exit_Critical(pm);
+            }
+        }
+        if (!commFault && (assignedToB & bit)) {
+            if (!(Elevator_GetPendingFloors(elevB) & floorBit)) {
+                pm = Enter_Critical();
+                assignedToB &= ~bit;
+                Exit_Critical(pm);
+            }
+        }
+    }
+
     /* ------ Comm fault: master (A) takes ALL calls ------ */
     if (commFault) {
         pm = Enter_Critical();

@@ -330,13 +330,10 @@ int main(void) {
 
     while (1) {
 
-        /* -------- Emergency check (always first) -------- */
-        if (localElev.emergencyStop) {
-            localElev.state = ELEV_EMERGENCY_STOP;
-            Pwm_SetDutyPercent(MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL, 0);
-        }
-
         /* -------- Run local elevator FSM -------- */
+        /* NOTE: Emergency check is handled inside Elevator_Run() which
+         * forces ELEV_EMERGENCY_STOP and instant-stops the motor via
+         * the ramp context.  No duplicate handling needed here. */
         Elevator_Run(&localElev);
 
 #if IS_MASTER_BOARD
@@ -400,11 +397,20 @@ int main(void) {
                     spiCommFault = 1;
                     /* [FIX #3] Force slave into independent/emergency mode.
                      * Clears assigned calls, stops motor, ignores external
-                     * commands until SPI link recovers. */
+                     * commands until SPI link recovers.
+                     *
+                     * EnterIndependentMode is called ONCE on the rising edge
+                     * of the fault.  The FSM may internally transition
+                     * INDEPENDENT→IDLE to service cabin requests while the
+                     * fault persists — that is acceptable (degraded cabin-
+                     * only operation).  We do NOT re-enter independent mode
+                     * on subsequent iterations to avoid ping-ponging. */
                     Elevator_EnterIndependentMode(&localElev);
                 }
+                /* While fault persists, ensure assignedCalls stay cleared
+                 * so the FSM only services cabin requests. */
+                localElev.assignedCalls = 0;
             } else {
-                /* Link is still healthy */
                 spiCommFault = 0;
             }
         }
