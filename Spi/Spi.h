@@ -5,6 +5,10 @@
  *  Author    : Final Project
  *
  *  Full-duplex SPI driver (Master + Slave) for inter-MCU IPC.
+ *
+ *  [NON-BLOCKING] Both Master and Slave use interrupt-driven transfers.
+ *  Master: Spi_MasterTransferAsync() — ISR-driven, zero CPU polling.
+ *  Slave:  Spi_SlaveStartAsync()     — RXNE interrupt-driven.
  */
 
 #ifndef SPI_H
@@ -80,5 +84,25 @@ void Spi_CsLow(void);
  * @brief  Deassert CS high (Master only, manual GPIO).
  */
 void Spi_CsHigh(void);
+
+/**
+ * @brief  [NON-BLOCKING MASTER] Start an interrupt-driven full-duplex
+ *         transfer.  CS is asserted automatically.  When all bytes are
+ *         exchanged, the ISR deasserts CS and invokes the Callback.
+ *         The main loop is NOT blocked — it can continue running the FSM.
+ * @param  SpiId     SPI_1 or SPI_2
+ * @param  TxBuf     Pointer to transmit buffer (must remain valid until callback)
+ * @param  RxBuf     Pointer to receive buffer
+ * @param  Length    Number of bytes
+ * @param  Callback  Function invoked from ISR when transfer completes
+ */
+void Spi_MasterTransferAsync(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf,
+                              uint8 Length, SpiRxCallback Callback);
+
+/**
+ * @brief  Check if a master async transfer is currently in progress.
+ * @return TRUE if busy, FALSE if idle.
+ */
+boolean Spi_MasterBusy(void);
 
 #endif /* SPI_H */

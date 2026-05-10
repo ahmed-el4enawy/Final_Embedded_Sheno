@@ -5,8 +5,18 @@
  *  Author    : Final Project
  *
  *  Full-duplex SPI driver for STM32F401 (bare-metal).
- *  Master: blocking transfer with manual CS.
- *  Slave : interrupt-driven, non-blocking.
+ *
+ *  [REWRITE — Non-Blocking Master]
+ *  Both Master and Slave now use interrupt-driven, non-blocking transfers.
+ *
+ *  Master: Spi_MasterTransferAsync() enables TXEIE/RXNEIE interrupts.
+ *          The ISR feeds bytes from TxBuf and collects into RxBuf.
+ *          On frame completion, a user callback fires and CS is raised.
+ *          The old blocking Spi_TransmitReceive() is kept for boot-time
+ *          one-shot use only (startup message) but is NOT used during
+ *          the main loop.
+ *
+ *  Slave:  Interrupt-driven via RXNEIE (unchanged from previous version).
  */
 
 #include "Spi.h"
@@ -25,8 +35,8 @@ static uint32 Spi_BaseAddr[2] = { SPI1_BASE_ADDR, SPI2_BASE_ADDR };
 
 #define SPI_PERIPH(id)  ((SpiType *)Spi_BaseAddr[(id) - 1])
 
-/* Slave async context */
-static volatile uint8  *Spi_SlaveTxBuf   = 0;
+/* ======================== Slave async context ===================== */
+static volatile const uint8  *Spi_SlaveTxBuf   = 0;
 static volatile uint8   Spi_SlaveTxLen   = 0;
 static volatile uint8   Spi_SlaveTxIdx   = 0;
 
@@ -35,6 +45,19 @@ static volatile uint8   Spi_SlaveRxLen   = 0;
 static volatile uint8   Spi_SlaveRxIdx   = 0;
 
 static SpiRxCallback    Spi_SlaveCallback = 0;
+
+/* ======================== Master async context ==================== */
+/* [NON-BLOCKING MASTER]
+ * The Master ISR feeds TxBuf bytes into DR on TXE, and reads RxBuf
+ * bytes from DR on RXNE.  When all bytes are exchanged, the ISR
+ * disables TXEIE/RXNEIE and invokes the user callback. */
+static const uint8     *Spi_MasterTxBuf     = 0;
+static       uint8     *Spi_MasterRxBuf     = 0;
+static volatile uint8   Spi_MasterLen       = 0;
+static volatile uint8   Spi_MasterTxIdx     = 0;
+static volatile uint8   Spi_MasterRxIdx     = 0;
+static SpiRxCallback    Spi_MasterCallback  = 0;
+static volatile uint8   Spi_MasterMode      = 0; /* 0=idle, 1=active */
 
 /* ------------------------------------------------------------------ */
 /*  CS helpers (PA4 as manual GPIO)                                   */
@@ -68,6 +91,11 @@ void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv) {
                   | ((uint32)BaudDiv << SPI_CR1_BR0); /* Baud rate           */
         /* CPOL=0, CPHA=0, 8-bit, MSB first (defaults) */
 
+        /* [NON-BLOCKING MASTER] Enable NVIC for SPI1 so the Master ISR
+         * can fire when TXEIE/RXNEIE are later enabled per-transfer. */
+        uint8 irq = (SpiId == SPI_1) ? SPI1_IRQ_NUMBER : SPI2_IRQ_NUMBER;
+        Nvic_EnableIrq(irq);
+
     } else {
         /* Slave mode: hardware NSS or software */
         spi->CR1 = (1U << SPI_CR1_SSM);  /* SSM=1, SSI=0 → slave           */
@@ -79,7 +107,8 @@ void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Master: full-duplex blocking transfer                             */
+/*  Master: full-duplex BLOCKING transfer (boot-time / one-shot only) */
+/*  WARNING: Do NOT use this in the main loop.  Use the async version.*/
 /* ------------------------------------------------------------------ */
 void Spi_TransmitReceive(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf, uint8 Length) {
     SpiType *spi = SPI_PERIPH(SpiId);
@@ -106,6 +135,53 @@ void Spi_TransmitReceive(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf, uint8 Le
 
     /* Wait until not busy */
     while (READ_BIT(spi->SR, SPI_SR_BSY)) {}
+}
+
+/* ------------------------------------------------------------------ */
+/*  [NON-BLOCKING MASTER]                                             */
+/*  Master: full-duplex interrupt-driven transfer                     */
+/*                                                                     */
+/*  Initiates an 8-byte exchange by enabling TXEIE.  The SPI1 ISR    */
+/*  feeds bytes on TXE and collects on RXNE.  When all bytes are      */
+/*  received, the ISR deasserts CS, disables interrupts, and invokes  */
+/*  the user Callback(RxBuf, Length).                                  */
+/*                                                                     */
+/*  The main loop only needs to set a flag and return — zero CPU      */
+/*  time spent polling SPI status registers.                          */
+/* ------------------------------------------------------------------ */
+void Spi_MasterTransferAsync(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf,
+                              uint8 Length, SpiRxCallback Callback) {
+    SpiType *spi = SPI_PERIPH(SpiId);
+
+    uint32 pm = Enter_Critical();
+
+    /* Store transfer context */
+    Spi_MasterTxBuf    = TxBuf;
+    Spi_MasterRxBuf    = RxBuf;
+    Spi_MasterLen      = Length;
+    Spi_MasterTxIdx    = 0;
+    Spi_MasterRxIdx    = 0;
+    Spi_MasterCallback = Callback;
+    Spi_MasterMode     = 1;
+
+    /* Clear any old OVR by reading DR then SR */
+    { volatile uint8 d = (uint8)spi->DR; d = (uint8)spi->SR; (void)d; }
+
+    /* Assert CS */
+    Spi_CsLow();
+
+    /* Enable TXE and RXNE interrupts — ISR will feed bytes */
+    SET_BIT(spi->CR2, SPI_CR2_TXEIE);
+    SET_BIT(spi->CR2, SPI_CR2_RXNEIE);
+
+    Exit_Critical(pm);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Check if a master async transfer is in progress                   */
+/* ------------------------------------------------------------------ */
+boolean Spi_MasterBusy(void) {
+    return Spi_MasterMode ? TRUE : FALSE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,11 +222,63 @@ void Spi_SlaveStartAsync(uint8 SpiId, SpiRxCallback Callback,
 }
 
 /* ------------------------------------------------------------------ */
-/*  SPI1 IRQ Handler (Slave non-blocking driver)                      */
+/*  SPI1 IRQ Handler                                                  */
+/*                                                                     */
+/*  Shared between Master (non-blocking transfer) and Slave (async    */
+/*  reception).  The Spi_MasterMode flag disambiguates.               */
 /* ------------------------------------------------------------------ */
 void SPI1_IRQHandler(void) {
     SpiType *spi = (SpiType *)SPI1_BASE_ADDR;
 
+    /* ============================================================== */
+    /*  MASTER interrupt-driven transfer                              */
+    /* ============================================================== */
+    if (Spi_MasterMode) {
+        /* ---- TXE: feed next TX byte ---- */
+        if (READ_BIT(spi->CR2, SPI_CR2_TXEIE) && READ_BIT(spi->SR, SPI_SR_TXE)) {
+            if (Spi_MasterTxIdx < Spi_MasterLen) {
+                spi->DR = Spi_MasterTxBuf[Spi_MasterTxIdx];
+                Spi_MasterTxIdx++;
+            }
+            if (Spi_MasterTxIdx >= Spi_MasterLen) {
+                /* All TX bytes loaded — disable TXE interrupt */
+                CLEAR_BIT(spi->CR2, SPI_CR2_TXEIE);
+            }
+        }
+
+        /* ---- RXNE: collect RX byte ---- */
+        if (READ_BIT(spi->SR, SPI_SR_RXNE)) {
+            uint8 rxByte = (uint8)spi->DR;
+            if (Spi_MasterRxIdx < Spi_MasterLen) {
+                Spi_MasterRxBuf[Spi_MasterRxIdx] = rxByte;
+                Spi_MasterRxIdx++;
+            }
+
+            /* Frame complete? */
+            if (Spi_MasterRxIdx >= Spi_MasterLen) {
+                /* Disable RXNE interrupt */
+                CLEAR_BIT(spi->CR2, SPI_CR2_RXNEIE);
+
+                /* Wait for last byte to finish shifting (BSY) */
+                while (READ_BIT(spi->SR, SPI_SR_BSY)) {}
+
+                /* Deassert CS */
+                Spi_CsHigh();
+
+                Spi_MasterMode = 0;
+
+                /* Invoke user callback */
+                if (Spi_MasterCallback) {
+                    Spi_MasterCallback(Spi_MasterRxBuf, Spi_MasterLen);
+                }
+            }
+        }
+        return;   /* Master handled — do not fall through to Slave */
+    }
+
+    /* ============================================================== */
+    /*  SLAVE interrupt-driven reception (unchanged)                  */
+    /* ============================================================== */
     if (READ_BIT(spi->SR, SPI_SR_RXNE)) {
         uint8 rxByte = (uint8)spi->DR;
 

@@ -387,6 +387,21 @@ static void System_Init(void) {
 }
 
 /* ================================================================== */
+/*  [NON-BLOCKING MASTER] SPI completion callback                      */
+/*                                                                      */
+/*  Called from SPI1_IRQHandler when all 8 bytes have been exchanged.  */
+/*  Sets spiRxReady so the main loop can parse the received frame on   */
+/*  its next iteration — zero CPU time spent polling TXE/RXNE.         */
+/* ================================================================== */
+#if IS_MASTER_BOARD
+static void MasterSpiDoneCb(uint8 *buf, uint8 len) {
+    (void)buf;
+    (void)len;
+    spiRxReady = 1;
+}
+#endif
+
+/* ================================================================== */
 /*  MAIN                                                               */
 /* ================================================================== */
 
@@ -403,35 +418,45 @@ int main(void) {
         Elevator_Run(&localElev);
 
 #if IS_MASTER_BOARD
-        /* -------- Master: 50 ms SPI exchange -------- */
-        if (spiExchangeFlag) {
+        /* -------- Master: 50 ms non-blocking SPI exchange -------- */
+        /* [NON-BLOCKING MASTER]
+         *
+         * Previous code used blocking Spi_TransmitReceive() which polled
+         * TXE/RXNE in a while loop.  If the slave was unresponsive, the
+         * master CPU would hang indefinitely.
+         *
+         * New flow:
+         *   1. Timer ISR sets spiExchangeFlag every 50 ms.
+         *   2. Main loop builds the TX frame and calls
+         *      Spi_MasterTransferAsync() which enables TXEIE/RXNEIE.
+         *   3. SPI1 ISR feeds bytes from TxBuf, collects into RxBuf.
+         *   4. On completion, ISR invokes MasterSpiDoneCb which sets
+         *      spiRxReady = 1 and deasserts CS.
+         *   5. Main loop sees spiRxReady on the NEXT iteration and
+         *      parses the frame / runs the dispatcher.
+         *
+         * CPU is NEVER blocked polling SPI status registers. */
+
+        /* Step 1: Initiate async transfer when timer fires */
+        if (spiExchangeFlag && !Spi_MasterBusy()) {
             spiExchangeFlag = 0;
-
-            /* Build TX frame with latest local state */
             BuildLocalFrame();
+            Spi_MasterTransferAsync(SPI_1, spiTxBuf, spiRxBuf,
+                                    SPI_FRAME_LEN, MasterSpiDoneCb);
+        }
 
-            /* Full-duplex transfer */
-            uint32 pm = Enter_Critical();
-            Spi_CsLow();
-            Spi_TransmitReceive(SPI_1, spiTxBuf, spiRxBuf, SPI_FRAME_LEN);
-            Spi_CsHigh();
-            Exit_Critical(pm);
+        /* Step 2: Process completed transfer */
+        if (spiRxReady) {
+            spiRxReady = 0;
 
             /* Parse remote frame */
             if (ParseRemoteFrame()) {
                 spiCommFault = 0;
-                spiLastGoodRxTick = sysTickMs;  /* [FIX #4] reset timeout */
+                spiLastGoodRxTick = sysTickMs;
             } else {
-                /* [FIX #4] Check elapsed time since last valid frame */
                 uint32 elapsed = sysTickMs - spiLastGoodRxTick;
                 if (elapsed >= SPI_TIMEOUT_MS) {
                     if (!spiCommFault) {
-                        /* [FIX — Sequence Wrap-Around]
-                         * Invalidate spiLastRxSeq on fault entry so the
-                         * first valid recovery frame is never dropped as
-                         * a "duplicate" due to 8-bit wrap-around collision.
-                         * 0xFF cannot naturally follow a valid sequence
-                         * without at least one accepted frame in between. */
                         spiLastRxSeq = 0xFF;
                     }
                     spiCommFault = 1;
@@ -441,6 +466,19 @@ int main(void) {
             /* Run dispatcher with latest data */
             Dispatcher_Run(&localElev, &remoteElev,
                            spiCommFault ? TRUE : FALSE);
+        }
+
+        /* Step 3: Even without RX, check for timeout */
+        if (!spiRxReady) {
+            uint32 elapsed = sysTickMs - spiLastGoodRxTick;
+            if (elapsed >= SPI_TIMEOUT_MS) {
+                if (!spiCommFault) {
+                    spiLastRxSeq = 0xFF;
+                }
+                spiCommFault = 1;
+                /* Run dispatcher in fault mode */
+                Dispatcher_Run(&localElev, &remoteElev, TRUE);
+            }
         }
 #else
         /* -------- Slave: check for new SPI data -------- */
