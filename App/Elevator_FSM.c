@@ -15,6 +15,7 @@
 #include "Elevator_FSM.h"
 #include "Board_Config.h"
 #include "Pwm.h"
+#include "Timer.h"
 #include "Critical.h"
 
 /* ------------------------------------------------------------------ */

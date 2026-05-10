@@ -8,6 +8,7 @@
 #include "stm32f401xe.h"
 #include "Usart.h"
 #include "Gpio.h"
+#include "Nvic.h"
 #include "RingBuffer.h"
 #include "Std_Types.h"
 
