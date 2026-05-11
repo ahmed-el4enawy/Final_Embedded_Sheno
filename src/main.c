@@ -458,7 +458,20 @@ int main(void) {
 
     System_Init();
 
+    /* [NEW] State for Cabin Button Periodic Scan */
+    static uint32 lastCabinScanTick = 0;
+
     while (1) {
+
+        /* -------- Cabin Button Periodic Scan (~10ms) -------- */
+        /* [FIX #6] Replaces EXTI to resolve PA0/PC0 hardware conflict. */
+        {
+            uint32 elapsed = sysTickMs - lastCabinScanTick;
+            if (elapsed >= 10) {
+                lastCabinScanTick = sysTickMs;
+                CabinButtons_Scan();
+            }
+        }
 
         /* -------- Run local elevator FSM -------- */
         /* NOTE: Emergency check is handled inside Elevator_Run() which

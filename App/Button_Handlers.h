@@ -21,4 +21,10 @@
  */
 void Buttons_Init(ElevatorContext *ctx);
 
+/**
+ * @brief  Periodic non-blocking scan for cabin buttons.
+ *         Must be called every ~10ms from the main loop.
+ */
+void CabinButtons_Scan(void);
+
 #endif /* BUTTON_HANDLERS_H */
