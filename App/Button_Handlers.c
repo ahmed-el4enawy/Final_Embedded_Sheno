@@ -217,13 +217,15 @@ void Buttons_Init(ElevatorContext *ctx) {
     Exti_Enable(FLOOR_SENS_PIN_F3);
     Exti_Enable(FLOOR_SENS_PIN_F4);
 
-    /* Floor sensor NVIC priority (PC11-PC14 are on EXTI15_10) */
-    /* Handled via IRQ_EXTI15_10 (same as emergency priority 0) */
-
-    /* Floor sensor NVIC priority = 1 (high, but below emergency) */
-    /* EXTI11-14 all share NVIC IRQ 40 (EXTI15_10), same as emergency.
-     * The callbacks differentiate which line fired.  Emergency callback
-     * itself sets the flag immediately, so it effectively preempts. */
+    /* Floor sensor NVIC priority (PC0-PC3 are on EXTI0-3) */
+    /* Note: PA0-PA3 (Cabin) and PC0-PC3 (Floor) share EXTI0-3. 
+     * STM32 EXTI can only map one port per line. 
+     * Schematic check: PA0-PA3 and PC0-PC3 are assigned. 
+     * Both share PRIO_CABIN_BTN (2) priority on the same NVIC vectors. */
+    SetIrqPriority(IRQ_EXTI0, PRIO_CABIN_BTN);
+    SetIrqPriority(IRQ_EXTI1, PRIO_CABIN_BTN);
+    SetIrqPriority(IRQ_EXTI2, PRIO_CABIN_BTN);
+    SetIrqPriority(IRQ_EXTI3, PRIO_CABIN_BTN);
 
 #if IS_MASTER_BOARD
     /* ---- Hallway buttons (pull-up, falling edge) ---- */

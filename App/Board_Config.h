@@ -11,7 +11,7 @@
  *  - Cabin: PA0-PA3
  *  - Hall: PB4-PB9
  *  - Emergency: PB10
- *  - Floor: PC11-PC14
+ *  - Floor: PC0-PC3
  *  - PWM: PC6 (TIM3 CH1)
  *
  *  [PROTEUS MAPPING - BOARD B (SLAVE)]
@@ -19,8 +19,8 @@
  *  - UART1: TX=PA9, RX=PA10
  *  - Cabin: PA0-PA3
  *  - Emergency: PB10
- *  - Floor: PC11-PC14
- *  - PWM: PB0 (TIM3 CH3)
+ *  - Floor: PC0-PC3
+ *  - PWM: PC6 (TIM3 CH1)
  */
 
 #ifndef BOARD_CONFIG_H
@@ -117,10 +117,10 @@
 #define FLOOR_SENS_PORT         GPIO_C
 #define FLOOR_SENS_RCC          RCC_GPIOC
 #define FLOOR_SENS_EXTI_PORT    EXTI_PORT_C
-#define FLOOR_SENS_PIN_F1       11U
-#define FLOOR_SENS_PIN_F2       12U
-#define FLOOR_SENS_PIN_F3       13U
-#define FLOOR_SENS_PIN_F4       14U
+#define FLOOR_SENS_PIN_F1       0U
+#define FLOOR_SENS_PIN_F2       1U
+#define FLOOR_SENS_PIN_F3       2U
+#define FLOOR_SENS_PIN_F4       3U
 
 /* Hallway Call Buttons (PB4 - PB9, Master Only) */
 #if IS_MASTER_BOARD
@@ -155,8 +155,8 @@
 /* ========================================================================== */
 /*  7. IRQ PRIORITIES (0 = Highest)                                          */
 /* ========================================================================== */
-/* EXTI15_10 handles Emergency (PB10) and Floor Sensors (PC11-14).
- * EXTI0-3 handles Cabin Buttons (PA0-3).
+/* EXTI15_10 handles Emergency (PB10).
+ * EXTI0-3 handles Cabin Buttons (PA0-3) AND Floor Sensors (PC0-3).
  * EXTI4, 9_5 handle Hall Buttons (PB4-9).
  */
 #define PRIO_EMERGENCY          0U
