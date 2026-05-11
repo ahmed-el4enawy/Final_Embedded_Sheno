@@ -2,7 +2,7 @@
 
 | Current State | Event | Next State | Action |
 |---------------|-------|------------|--------|
-| **IDLE** | `Elevator_AddCabinRequest` / `assignedCalls` | **IDLE** | Request bits set in mask |
+| **IDLE** | `CabinButtons_Scan` / `assignedCalls` | **IDLE** | Request bits set in mask |
 | **IDLE** | `currentFloor` is requested | **DOORS_OPEN** | Stop motor, start 3s door timer |
 | **IDLE** | Request above `currentFloor` | **MOVING_UP** | Ramp motor UP |
 | **IDLE** | Request below `currentFloor` | **MOVING_DOWN** | Ramp motor UP |
