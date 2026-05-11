@@ -83,18 +83,39 @@ void Elevator_FloorSensorTriggered(ElevatorContext *ctx, uint8 floor) {
 }
 
 void Elevator_EmergencyStop(ElevatorContext *ctx) {
+    /* [FIX — Race Condition: Emergency Routines]
+     *
+     * This function is called from EXTI ISR (emergency button press).
+     * BuildLocalFrame() in the main loop reads ctx->state, ctx->emergencyStop,
+     * and ctx->ramp asynchronously for SPI frame packing.
+     *
+     * Without a critical section, a torn read can occur:
+     *   - Main loop reads ctx->state = ELEV_IDLE (stale)
+     *   - ISR fires, sets ctx->state = ELEV_EMERGENCY_STOP
+     *   - Main loop reads ctx->emergencyStop = 1 (fresh)
+     *   - Frame sent with state=IDLE + emergency=1 → protocol violation
+     *
+     * The critical section ensures all fields are updated atomically. */
+    uint32 pm = Enter_Critical();
     ctx->emergencyStop = 1;
     ctx->state = ELEV_EMERGENCY_STOP;
     /* [FIX #1] Instant stop — bypass ramp for safety */
     ctx->ramp.targetDuty  = MOTOR_DUTY_STOP;
     ctx->ramp.currentDuty = MOTOR_DUTY_STOP;
     Pwm_SetDutyPercent(MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL, MOTOR_DUTY_STOP);
+    Exit_Critical(pm);
 }
 
 void Elevator_EmergencyClear(ElevatorContext *ctx) {
+    /* [FIX — Race Condition: Emergency Routines]
+     * Same rationale as EmergencyStop — must atomically update state,
+     * emergencyStop, and direction so BuildLocalFrame() cannot observe
+     * a partially-cleared emergency (e.g., state=IDLE but emergencyStop=1). */
+    uint32 pm = Enter_Critical();
     ctx->emergencyStop = 0;
     ctx->state = ELEV_IDLE;
     ctx->direction = DIR_NONE;
+    Exit_Critical(pm);
 }
 
 void Elevator_DoorTimerExpired(ElevatorContext *ctx) {

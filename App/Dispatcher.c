@@ -223,11 +223,24 @@ void Dispatcher_Run(ElevatorContext *elevA, ElevatorContext *elevB,
     }
 
     /* ------ Comm fault: master (A) takes ALL calls ------ */
+    /* [FIX — Stranded Passenger Bug]
+     *
+     * Previous code only reclaimed pendingHallCalls.  However, calls
+     * that were ALREADY assigned to Slave B (in assignedToB) are now
+     * unreachable — the Slave enters ELEV_INDEPENDENT and drops all
+     * assigned calls.  Without reclaiming assignedToB, those passengers
+     * are stranded forever.
+     *
+     * Fix: Master inherits assignedToB into assignedToA, then zeroes
+     * assignedToB so the floor mask is built correctly. */
     if (commFault) {
         pm = Enter_Critical();
+        assignedToA |= assignedToB;    /* reclaim Slave's stranded calls */
+        assignedToB  = 0;              /* Slave is unreachable           */
         assignedToA |= pendingHallCalls;
         pendingHallCalls = 0;
         elevA->assignedCalls = HallMaskToFloorMask(assignedToA);
+        elevB->assignedCalls = 0;      /* mirror: Slave has nothing      */
         Exit_Critical(pm);
         return;
     }
