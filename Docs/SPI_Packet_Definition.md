@@ -2,24 +2,24 @@
 
 > **Submission Requirement (Section 6):** "Packet Definition: Diagram of your 8-byte SPI frame."
 
-## 8-Byte Frame Layout
+## 8-Byte Frame Layout (Discussion Ready)
 
 ```text
-+------+------+------+------+------+------+------+------+
-| 0xA5 |State | Dir  | Assign| Hall | Flags | Seq  | XOR  |
-|      |Floor | Cabin| Calls | Calls|       |      |      |
-+------+------+------+------+------+------+------+------+
- Byte 0  Byte 1  Byte 2  Byte 3  Byte 4  Byte 5  Byte 6  Byte 7
+       Byte 0    Byte 1      Byte 2      Byte 3    Byte 4    Byte 5    Byte 6    Byte 7
+      +--------+-----------+-----------+---------+---------+---------+---------+---------+
+      | Header |State|Floor| Dir|Cabin |Assigned |  Hall   |  Flags  |Sequence |Checksum |
+      |  0xA5  |[7:4][3:0] |[7:4][3:0] |  Calls  |  Calls  |         |         |  (XOR)  |
+      +--------+-----------+-----------+---------+---------+---------+---------+---------+
 ```
 
-## Protocol Rationale (Discussion Points)
+## Technical Rationale
 
-| Feature | Rationale |
-|---------|-----------|
-| **XOR Checksum** | **Data Integrity**: SPI has no built-in error correction. The XOR checksum detects single-bit flips caused by EMI/RFI noise on the jumper wires, preventing the system from acting on corrupted floor requests or state changes. |
-| **Sequence Counter** | **Stale Data Rejection**: Ensures that a "stuck" or repeated frame (e.g., due to a logic analyzer glitch or buffer overflow) is not processed multiple times. It also helps calculate `checksumErrorCount` by detecting gaps in reception. |
-| **Fixed-Size (8B)** | **Determinism**: Using a fixed-size frame ensures the SPI interrupt load is constant and predictable. It simplifies buffer management and avoids the overhead of a length-byte field or COBS encoding. |
-| **SPI Full Duplex** | **Efficiency**: Allows the Master to send commands (hall call assignments) while simultaneously receiving status (cabin floor, door state) from the Slave in a single clock transaction, halving the bus occupation time. |
+| Design Choice | Purpose / Rationale |
+|---------------|---------------------|
+| **XOR Checksum** | **Data Integrity**: SPI has no built-in error checking. The XOR checksum detects single-bit flips caused by EMI noise on breadboard/jumper wires, preventing the FSM from reacting to corrupted floor requests. |
+| **Sequence Counter** | **Stale Data Rejection**: Prevents the system from processing the same command twice if the Master/Slave desyncs or if the logic analyzer glitches. It ensures each received frame is "fresh". |
+| **8-Byte Fixed Frame** | **Determinism**: A fixed length ensures the interrupt load on the CPU is constant and predictable. It avoids the overhead of a length byte and simplifies buffer management in bare-metal memory. |
+| **SPI Full Duplex** | **Maximum Throughput**: Allows the Master to send Dispatcher assignments while simultaneously receiving the Slave's state in a single clock sequence (8 bytes total), halving the bus occupation time. |
 
 ## Per-Byte Detail
 

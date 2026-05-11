@@ -45,15 +45,7 @@ typedef void (*SpiRxCallback)(uint8 *RxBuf, uint8 Length);
  */
 void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv);
 
-/**
- * @brief  Full-duplex blocking transfer (Master).
- *         Simultaneously sends TxBuf and receives into RxBuf.
- * @param  SpiId   SPI_1 or SPI_2
- * @param  TxBuf   Pointer to transmit buffer
- * @param  RxBuf   Pointer to receive buffer
- * @param  Length  Number of bytes
- */
-void Spi_TransmitReceive(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf, uint8 Length);
+/* Spi_TransmitReceive removed. Use Spi_MasterTransferAsync instead. */
 
 /**
  * @brief  Pre-load the slave TX buffer so data is ready before the

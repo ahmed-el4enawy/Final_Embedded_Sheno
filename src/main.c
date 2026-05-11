@@ -343,7 +343,15 @@ static void System_Init(void) {
     Nvic_SetPriorityGrouping(3);
 
     /* Set SysTick priority to lowest (15) so it doesn't preempt EXTI/SPI */
-    SCB_SHPR3 |= (15UL << 24);
+    SCB_SHPR3 |= ((uint32)PRIO_SYSTICK << 24);
+
+    /* Set peripheral priorities from Board_Config.h */
+    Nvic_SetPriority(IRQ_SPI1,   PRIO_SPI);
+    Nvic_SetPriority(IRQ_USART1, PRIO_USART);
+    Nvic_SetPriority(28,         PRIO_TIMERS); /* TIM2 */
+    Nvic_SetPriority(29,         PRIO_TIMERS); /* TIM3 */
+    Nvic_SetPriority(30,         PRIO_TIMERS); /* TIM4 */
+    Nvic_SetPriority(50,         PRIO_TIMERS); /* TIM5 */
 
     Rcc_Enable(CABIN_BTN_RCC);
     Rcc_Enable(EMERG_BTN_RCC);

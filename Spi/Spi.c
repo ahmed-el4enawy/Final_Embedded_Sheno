@@ -110,32 +110,7 @@ void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv) {
 /*  Master: full-duplex BLOCKING transfer (boot-time / one-shot only) */
 /*  WARNING: Do NOT use this in the main loop.  Use the async version.*/
 /* ------------------------------------------------------------------ */
-void Spi_TransmitReceive(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf, uint8 Length) {
-    SpiType *spi = SPI_PERIPH(SpiId);
-    uint8 i;
-    volatile uint8 dummy;
-
-    /* Clear any old OVR by reading DR then SR */
-    dummy = (uint8)spi->DR;
-    dummy = (uint8)spi->SR;
-    (void)dummy;
-
-    for (i = 0; i < Length; i++) {
-        /* Wait until TXE = 1 */
-        while (!READ_BIT(spi->SR, SPI_SR_TXE)) {}
-
-        /* Write byte to DR → clocks out on MOSI, clocks in on MISO */
-        spi->DR = TxBuf[i];
-
-        /* Wait until RXNE = 1 */
-        while (!READ_BIT(spi->SR, SPI_SR_RXNE)) {}
-
-        RxBuf[i] = (uint8)spi->DR;
-    }
-
-    /* Wait until not busy */
-    while (READ_BIT(spi->SR, SPI_SR_BSY)) {}
-}
+/* Spi_TransmitReceive removed to enforce strictly non-blocking architecture. */
 
 /* ------------------------------------------------------------------ */
 /*  [NON-BLOCKING MASTER]                                             */

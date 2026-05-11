@@ -12,7 +12,7 @@
  *  - Hall: PB4-PB9
  *  - Emergency: PB10
  *  - Floor: PC11-PC14
- *  - PWM: PB0 (TIM3 CH3)
+ *  - PWM: PC6 (TIM3 CH1)
  *
  *  [PROTEUS MAPPING - BOARD B (SLAVE)]
  *  - SPI1: SCK=PA5, MISO=PA6, MOSI=PA7, CS=PB1
@@ -76,13 +76,13 @@
 /* ========================================================================== */
 /*  4. PWM CONFIGURATION (Motor Simulation LED)                               */
 /* ========================================================================== */
-/* PB0 -> TIM3 Channel 3, Alternate Function 2 */
+/* PC6 -> TIM3 Channel 1, Alternate Function 2 */
 #define MOTOR_PWM_TIMER         TIMER3
 #define MOTOR_PWM_RCC           RCC_TIM3
-#define MOTOR_PWM_PORT          GPIO_B
-#define MOTOR_PWM_PORT_RCC      RCC_GPIOB
-#define MOTOR_PWM_PIN           0U
-#define MOTOR_PWM_CHANNEL       PWM_CHANNEL_3
+#define MOTOR_PWM_PORT          GPIO_C
+#define MOTOR_PWM_PORT_RCC      RCC_GPIOC
+#define MOTOR_PWM_PIN           6U
+#define MOTOR_PWM_CHANNEL       PWM_CHANNEL_1
 #define MOTOR_PWM_AF            GPIO_AF2
 
 /* 10 kHz PWM Calculation (16 MHz HSI) */
@@ -155,24 +155,9 @@
 /* ========================================================================== */
 /*  7. IRQ PRIORITIES (0 = Highest)                                          */
 /* ========================================================================== */
-/* EXTI15_10 (Emergency + Floor Sensors PC0-3 are on EXTI0-3 though) 
- * Wait, PC0-3 are on EXTI0, EXTI1, EXTI2, EXTI3.
- * Cabin Buttons PA0-3 are ALSO on EXTI0, EXTI1, EXTI2, EXTI3.
- * 
- * If PA0 and PC0 are both used, they collide on EXTI0.
- * In STM32, only ONE port can be mapped to an EXTI line at a time.
- * 
- * Let's re-verify the user's pins:
- * Cabin: PA0, PA1, PA2, PA3
- * Floor: PC0, PC1, PC2, PC3
- * 
- * This is a hardware conflict if both are active interrupts.
- * However, maybe one is polled? No, user said "EXTI buttons".
- * 
- * If they are both EXTI, we have a problem. 
- * BUT, usually in these projects, the floor sensors are also interrupts.
- * 
- * Let's check the EXTI driver to see how it handles port mapping.
+/* EXTI15_10 handles Emergency (PB10) and Floor Sensors (PC11-14).
+ * EXTI0-3 handles Cabin Buttons (PA0-3).
+ * EXTI4, 9_5 handle Hall Buttons (PB4-9).
  */
 #define PRIO_EMERGENCY          0U
 #define PRIO_FLOOR_SENS         1U
@@ -180,6 +165,7 @@
 #define PRIO_HALL_BTN           3U
 #define PRIO_SPI                4U
 #define PRIO_USART              4U
+#define PRIO_TIMERS             5U
 #define PRIO_SYSTICK            15U
 
 /* NVIC IRQ Numbers for STM32F401 */

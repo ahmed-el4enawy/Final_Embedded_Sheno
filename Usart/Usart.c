@@ -29,7 +29,13 @@ void Usart1_Init(void) {
 
     USART1->CR1 &= ~(1 << USART_CR1_OVER8_Pos); // 16 over sampling
 
-    USART1->BRR = 0x683; // Baud Rate 9600
+    /* 
+     * Baud Rate calculation:
+     * BRR = f_CK / baud
+     * At 16 MHz, 9600 baud: 16000000 / 9600 = 1666.66 (0x682)
+     */
+    uint32 pclk = 16000000UL; /* HSI */
+    USART1->BRR = pclk / UART_BAUD_RATE;
 
     /* Enable Transmission block */
     USART1->CR1 |= (1 << USART_CR1_TE_Pos);
@@ -49,7 +55,7 @@ void Usart1_Init(void) {
     USART1->CR1 |= (1 << USART_CR1_UE_Pos);
 }
 
-uint8 Usart1_TransmitByte(uint8 Byte) {
+    /* Polling is ONLY allowed for UART debug output per project statement. */
     if (USART1->SR & USART_SR_TXE_Msk) {
         USART1->DR = Byte;
         while (!(USART1->SR & USART_SR_TC_Msk));
@@ -70,10 +76,8 @@ void Usart1_TransmitString(const char *Str) {
     }
 }
 
-uint8 Usart1_ReceiveByte(void) {
-    while (!(USART1->SR & USART_SR_RXNE_Msk));
-    return USART1->DR;
-}
+/* Usart1_ReceiveByte removed to enforce non-blocking architecture. 
+ * Use Usart1_GetByte instead. */
 
 /*
  * Non‑blocking read of a single byte.

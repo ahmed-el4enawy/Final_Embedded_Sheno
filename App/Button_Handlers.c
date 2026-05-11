@@ -217,11 +217,8 @@ void Buttons_Init(ElevatorContext *ctx) {
     Exti_Enable(FLOOR_SENS_PIN_F3);
     Exti_Enable(FLOOR_SENS_PIN_F4);
 
-    /* Floor sensor NVIC priority (PC0-PC3 are on EXTI0-3) */
-    SetIrqPriority(IRQ_EXTI0, PRIO_FLOOR_SENS);
-    SetIrqPriority(IRQ_EXTI1, PRIO_FLOOR_SENS);
-    SetIrqPriority(IRQ_EXTI2, PRIO_FLOOR_SENS);
-    SetIrqPriority(IRQ_EXTI3, PRIO_FLOOR_SENS);
+    /* Floor sensor NVIC priority (PC11-PC14 are on EXTI15_10) */
+    /* Handled via IRQ_EXTI15_10 (same as emergency priority 0) */
 
     /* Floor sensor NVIC priority = 1 (high, but below emergency) */
     /* EXTI11-14 all share NVIC IRQ 40 (EXTI15_10), same as emergency.
