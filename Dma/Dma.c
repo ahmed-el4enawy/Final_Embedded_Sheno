@@ -98,8 +98,8 @@ void Dma_Usart1TxInit(void) {
 
 /* ------------------------------------------------------------------ */
 void Dma_Usart1TxStart(const uint8 *data, uint16 len) {
-    /* Wait if a previous transfer is still running */
-    while (UART_DMA_STREAM->CR & (1UL << DMA_CR_EN)) {}
+    /* Skip if a previous transfer is still running */
+    if (UART_DMA_STREAM->CR & (1UL << DMA_CR_EN)) return;
 
     /* Clear flags */
     DMA2->HIFCR = (1UL << DMA_HISR_TCIF7) | (1UL << DMA_HISR_HTIF7)

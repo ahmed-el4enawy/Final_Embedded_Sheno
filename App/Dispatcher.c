@@ -260,8 +260,10 @@ void Dispatcher_Run(ElevatorContext *elevA, ElevatorContext *elevB,
         uint8 tgtFloor = hallCallTable[i].floor;
         uint8 tgtDir   = hallCallTable[i].direction;
 
+        pm = Enter_Critical();
         sint16 scoreA = Dispatcher_Score(elevA, tgtFloor, tgtDir);
         sint16 scoreB = Dispatcher_Score(elevB, tgtFloor, tgtDir);
+        Exit_Critical(pm);
 
         /* [FIX #2] If BOTH return -1, leave the call PENDING.
          * It will be re-evaluated on the next Dispatcher_Run() call

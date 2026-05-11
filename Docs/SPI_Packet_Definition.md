@@ -4,13 +4,22 @@
 
 ## 8-Byte Frame Layout
 
+```text
++------+------+------+------+------+------+------+------+
+| 0xA5 |State | Dir  | Assign| Hall | Flags | Seq  | XOR  |
+|      |Floor | Cabin| Calls | Calls|       |      |      |
++------+------+------+------+------+------+------+------+
+ Byte 0  Byte 1  Byte 2  Byte 3  Byte 4  Byte 5  Byte 6  Byte 7
 ```
-         Byte 0    Byte 1      Byte 2      Byte 3    Byte 4    Byte 5    Byte 6    Byte 7
-        ┌────────┬───────────┬───────────┬─────────┬─────────┬─────────┬─────────┬─────────┐
-        │ Header │State|Floor│ Dir|Cabin │Assigned │  Hall   │  Flags  │Sequence │Checksum │
-        │  0xA5  │[7:4][3:0] │[7:4][3:0] │  Calls  │  Calls  │         │         │XOR 0..6 │
-        └────────┴───────────┴───────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
-```
+
+## Protocol Rationale (Discussion Points)
+
+| Feature | Rationale |
+|---------|-----------|
+| **XOR Checksum** | **Data Integrity**: SPI has no built-in error correction. The XOR checksum detects single-bit flips caused by EMI/RFI noise on the jumper wires, preventing the system from acting on corrupted floor requests or state changes. |
+| **Sequence Counter** | **Stale Data Rejection**: Ensures that a "stuck" or repeated frame (e.g., due to a logic analyzer glitch or buffer overflow) is not processed multiple times. It also helps calculate `checksumErrorCount` by detecting gaps in reception. |
+| **Fixed-Size (8B)** | **Determinism**: Using a fixed-size frame ensures the SPI interrupt load is constant and predictable. It simplifies buffer management and avoids the overhead of a length-byte field or COBS encoding. |
+| **SPI Full Duplex** | **Efficiency**: Allows the Master to send commands (hall call assignments) while simultaneously receiving status (cabin floor, door state) from the Slave in a single clock transaction, halving the bus occupation time. |
 
 ## Per-Byte Detail
 

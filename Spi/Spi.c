@@ -194,10 +194,11 @@ void Spi_SlavePreload(uint8 SpiId, const uint8 *TxBuf, uint8 Length) {
     Spi_SlaveTxIdx = 1;   /* byte 0 goes into DR now */
     Spi_SlaveRxIdx = 0;
 
-    /* Pre-load first byte into DR so it's ready when master clocks */
+    /* Pre-load first byte into DR if TXE is ready */
     SpiType *spi = SPI_PERIPH(SpiId);
-    while (!READ_BIT(spi->SR, SPI_SR_TXE)) {}
-    spi->DR = TxBuf[0];
+    if (READ_BIT(spi->SR, SPI_SR_TXE)) {
+        spi->DR = TxBuf[0];
+    }
 
     Exit_Critical(pm);
 }
@@ -259,8 +260,8 @@ void SPI1_IRQHandler(void) {
                 /* Disable RXNE interrupt */
                 CLEAR_BIT(spi->CR2, SPI_CR2_RXNEIE);
 
-                /* Wait for last byte to finish shifting (BSY) */
-                while (READ_BIT(spi->SR, SPI_SR_BSY)) {}
+                /* [NON-BLOCKING] Last RXNE implies shifting is done. 
+                 * Small hardware latency exists but CS can be raised. */
 
                 /* Deassert CS */
                 Spi_CsHigh();
@@ -299,12 +300,13 @@ void SPI1_IRQHandler(void) {
             Spi_SlaveRxIdx = 0;
             Spi_SlaveTxIdx = 0;
 
-            /* Re-preload first TX byte for next frame */
-            if (Spi_SlaveTxBuf && Spi_SlaveTxLen > 0) {
-                Spi_SlaveTxIdx = 1;
-                while (!READ_BIT(spi->SR, SPI_SR_TXE)) {}
-                spi->DR = Spi_SlaveTxBuf[0];
-            }
+                /* Re-preload first TX byte if ready */
+                if (Spi_SlaveTxBuf && Spi_SlaveTxLen > 0) {
+                    Spi_SlaveTxIdx = 1;
+                    if (READ_BIT(spi->SR, SPI_SR_TXE)) {
+                        spi->DR = Spi_SlaveTxBuf[0];
+                    }
+                }
 
             if (Spi_SlaveCallback) {
                 Spi_SlaveCallback((uint8 *)Spi_SlaveRxBuf, Spi_SlaveRxLen);
