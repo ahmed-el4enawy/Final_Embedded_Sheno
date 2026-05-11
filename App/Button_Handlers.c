@@ -31,7 +31,7 @@ extern volatile uint32 sysTickMs;
 /* ------------------------------------------------------------------ */
 /*  [FIX #5] Debounce configuration                                  */
 /* ------------------------------------------------------------------ */
-#define DEBOUNCE_MS   50U   /* ignore EXTI edges within 50 ms */
+/* DEBOUNCE_MS is now defined in Board_Config.h */
 
 /* ------------------------------------------------------------------ */
 /*  The elevator context pointer is stored so ISR callbacks can use it */
@@ -171,7 +171,7 @@ void Buttons_Init(ElevatorContext *ctx) {
         }
     }
 
-    /* ---- Cabin floor buttons (PA0-PA3, pull-up, falling edge) ---- */
+    /* ---- Cabin floor buttons (pull-up, falling edge) ---- */
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F1, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F2, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F3, GPIO_INPUT, GPIO_PULL_UP);
@@ -187,22 +187,21 @@ void Buttons_Init(ElevatorContext *ctx) {
     Exti_Enable(CABIN_BTN_PIN_F3);
     Exti_Enable(CABIN_BTN_PIN_F4);
 
-    /* ---- Emergency stop (PB10, pull-up, falling edge) ---- */
+    /* ---- Emergency stop (pull-up, falling edge) ---- */
     Gpio_Init(EMERG_BTN_PORT, EMERG_BTN_PIN, GPIO_INPUT, GPIO_PULL_UP);
     Exti_Init(EMERG_BTN_PIN, EMERG_BTN_EXTI_PORT, EXTI_EDGE_FALLING, EmergencyBtn);
     Exti_Enable(EMERG_BTN_PIN);
 
-    /* Give emergency the HIGHEST NVIC priority (0 = highest) */
-    /* EXTI10 shares EXTI15_10_IRQHandler, NVIC IRQ = 40 */
-    SetIrqPriority(40, 0);
+    /* Give emergency the HIGHEST NVIC priority */
+    SetIrqPriority(IRQ_EXTI15_10, PRIO_EMERGENCY);
 
-    /* Lower priority for cabin buttons (priority 2) */
-    SetIrqPriority(6,  2);   /* EXTI0 */
-    SetIrqPriority(7,  2);   /* EXTI1 */
-    SetIrqPriority(8,  2);   /* EXTI2 */
-    SetIrqPriority(9,  2);   /* EXTI3 */
+    /* Lower priority for cabin buttons */
+    SetIrqPriority(IRQ_EXTI0, PRIO_CABIN_BTN);
+    SetIrqPriority(IRQ_EXTI1, PRIO_CABIN_BTN);
+    SetIrqPriority(IRQ_EXTI2, PRIO_CABIN_BTN);
+    SetIrqPriority(IRQ_EXTI3, PRIO_CABIN_BTN);
 
-    /* ---- Floor sensors (PC11-PC14, pull-down, rising edge) ---- */
+    /* ---- Floor sensors (pull-down, rising edge) ---- */
     Gpio_Init(FLOOR_SENS_PORT, FLOOR_SENS_PIN_F1, GPIO_INPUT, GPIO_PULL_DOWN);
     Gpio_Init(FLOOR_SENS_PORT, FLOOR_SENS_PIN_F2, GPIO_INPUT, GPIO_PULL_DOWN);
     Gpio_Init(FLOOR_SENS_PORT, FLOOR_SENS_PIN_F3, GPIO_INPUT, GPIO_PULL_DOWN);
@@ -218,13 +217,19 @@ void Buttons_Init(ElevatorContext *ctx) {
     Exti_Enable(FLOOR_SENS_PIN_F3);
     Exti_Enable(FLOOR_SENS_PIN_F4);
 
+    /* Floor sensor NVIC priority (PC0-PC3 are on EXTI0-3) */
+    SetIrqPriority(IRQ_EXTI0, PRIO_FLOOR_SENS);
+    SetIrqPriority(IRQ_EXTI1, PRIO_FLOOR_SENS);
+    SetIrqPriority(IRQ_EXTI2, PRIO_FLOOR_SENS);
+    SetIrqPriority(IRQ_EXTI3, PRIO_FLOOR_SENS);
+
     /* Floor sensor NVIC priority = 1 (high, but below emergency) */
     /* EXTI11-14 all share NVIC IRQ 40 (EXTI15_10), same as emergency.
      * The callbacks differentiate which line fired.  Emergency callback
      * itself sets the flag immediately, so it effectively preempts. */
 
 #if IS_MASTER_BOARD
-    /* ---- Hallway buttons (PB4-PB9, pull-up, falling edge) ---- */
+    /* ---- Hallway buttons (pull-up, falling edge) ---- */
     Gpio_Init(HALL_BTN_PORT, HALL_BTN_PIN_U1, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(HALL_BTN_PORT, HALL_BTN_PIN_D2, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(HALL_BTN_PORT, HALL_BTN_PIN_U2, GPIO_INPUT, GPIO_PULL_UP);
@@ -246,8 +251,8 @@ void Buttons_Init(ElevatorContext *ctx) {
     Exti_Enable(HALL_BTN_PIN_U3);
     Exti_Enable(HALL_BTN_PIN_D4);
 
-    /* Hall button NVIC priority = 3 */
-    SetIrqPriority(10, 3);   /* EXTI4 */
-    SetIrqPriority(23, 3);   /* EXTI9_5 */
+    /* Hall button NVIC priority */
+    SetIrqPriority(IRQ_EXTI4,   PRIO_HALL_BTN);
+    SetIrqPriority(IRQ_EXTI9_5, PRIO_HALL_BTN);
 #endif
 }

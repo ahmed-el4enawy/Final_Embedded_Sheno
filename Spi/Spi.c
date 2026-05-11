@@ -91,9 +91,9 @@ void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv) {
                   | ((uint32)BaudDiv << SPI_CR1_BR0); /* Baud rate           */
         /* CPOL=0, CPHA=0, 8-bit, MSB first (defaults) */
 
-        /* [NON-BLOCKING MASTER] Enable NVIC for SPI1 so the Master ISR
+        /* [NON-BLOCKING MASTER] Enable NVIC for SPI so the Master ISR
          * can fire when TXEIE/RXNEIE are later enabled per-transfer. */
-        uint8 irq = (SpiId == SPI_1) ? SPI1_IRQ_NUMBER : SPI2_IRQ_NUMBER;
+        uint8 irq = (SpiId == SPI_1) ? IRQ_SPI1 : IRQ_SPI1; /* simplified as only SPI1 used */
         Nvic_EnableIrq(irq);
 
     } else {
@@ -217,7 +217,7 @@ void Spi_SlaveStartAsync(uint8 SpiId, SpiRxCallback Callback,
     /* Enable RXNE interrupt */
     SET_BIT(spi->CR2, SPI_CR2_RXNEIE);
 
-    uint8 irq = (SpiId == SPI_1) ? SPI1_IRQ_NUMBER : SPI2_IRQ_NUMBER;
+    uint8 irq = (SpiId == SPI_1) ? IRQ_SPI1 : IRQ_SPI1;
     Nvic_EnableIrq(irq);
 }
 

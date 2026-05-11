@@ -30,6 +30,7 @@ void Telemetry_Init(void);
 boolean Telemetry_Update(const ElevatorContext *elevA,
                       const ElevatorContext *elevB,
                       boolean commOk,
-                      uint8 hallCalls);
+                      uint8 hallCalls,
+                      uint32 spiErrors);
 
 #endif /* TELEMETRY_H */

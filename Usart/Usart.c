@@ -11,15 +11,16 @@
 #include "Nvic.h"
 #include "RingBuffer.h"
 #include "Std_Types.h"
+#include "Board_Config.h"
 
 static RingBufferType usart1_rx_ring;
 
 void Usart1_Init(void) {
-    Gpio_Init(GPIO_A, 9, GPIO_AF, GPIO_PUSH_PULL);
-    Gpio_Init(GPIO_A, 10, GPIO_AF, GPIO_PUSH_PULL);
+    Gpio_Init(UART_GPIO_PORT, UART_TX_PIN, GPIO_AF, GPIO_PUSH_PULL);
+    Gpio_Init(UART_GPIO_PORT, UART_RX_PIN, GPIO_AF, GPIO_PUSH_PULL);
     
-    Gpio_SetAF(GPIO_A, 9, GPIO_AF7);
-    Gpio_SetAF(GPIO_A, 10, GPIO_AF7);
+    Gpio_SetAF(UART_GPIO_PORT, UART_TX_PIN, UART_AF);
+    Gpio_SetAF(UART_GPIO_PORT, UART_RX_PIN, UART_AF);
 
     
     USART1->CR1 &= ~(1 << USART_CR1_M_Pos); // 8-bit word length
@@ -42,7 +43,7 @@ void Usart1_Init(void) {
     /* Enable RX Not Empty interrupt */
     USART1->CR1 |= USART_CR1_RXNEIE;
 
-    Nvic_EnableIrq(37);  /* USART1 IRQ number = 37 */
+    Nvic_EnableIrq(IRQ_USART1);
     
     /* Enable USART1 */
     USART1->CR1 |= (1 << USART_CR1_UE_Pos);

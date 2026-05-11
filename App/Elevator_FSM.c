@@ -42,6 +42,7 @@ static uint8 Elevator_FindNextTargetDown(const ElevatorContext *ctx);
 
 void Elevator_Init(ElevatorContext *ctx) {
     ctx->state          = ELEV_IDLE;
+    ctx->prevState      = ELEV_IDLE;
     ctx->currentFloor   = 1;
     ctx->direction      = DIR_NONE;
     ctx->cabinRequests  = 0;
@@ -78,7 +79,9 @@ void Elevator_AddAssignedCalls(ElevatorContext *ctx, uint8 mask) {
 
 void Elevator_FloorSensorTriggered(ElevatorContext *ctx, uint8 floor) {
     if (floor >= 1 && floor <= NUM_FLOORS) {
+        uint32 pm = Enter_Critical();
         ctx->currentFloor = floor;
+        Exit_Critical(pm);
     }
 }
 
@@ -203,7 +206,7 @@ void Elevator_ExitIndependentMode(ElevatorContext *ctx) {
 /*  [FIX #1] PWM speed ramping — non-blocking                        */
 /*                                                                     */
 /*  Instead of snapping the duty cycle, we set a TARGET and step       */
-/*  toward it by RAMP_STEP_PERCENT every RAMP_STEP_INTERVAL ms.       */
+/*  toward it by RAMP_STEP_PERCENT every RAMP_STEP_INTERVAL_MS ms.     */
 /*  The ramp tick is called from the main FSM loop (no extra timer).  */
 /* ------------------------------------------------------------------ */
 
@@ -226,7 +229,7 @@ static void Elevator_RampTick(ElevatorContext *ctx) {
 
     uint32 now = sysTickMs;
     uint32 elapsed = now - ctx->ramp.lastStepTick;
-    if (elapsed < RAMP_STEP_INTERVAL) {
+    if (elapsed < RAMP_STEP_INTERVAL_MS) {
         return;   /* not yet time for next step */
     }
     ctx->ramp.lastStepTick = now;
@@ -289,6 +292,8 @@ static void Elevator_ClearCurrentFloor(ElevatorContext *ctx) {
 /*  FSM tick  — called from main loop                                 */
 /* ------------------------------------------------------------------ */
 void Elevator_Run(ElevatorContext *ctx) {
+    /* Update prevState for transition telemetry before state logic runs */
+    ctx->prevState = ctx->state;
 
     /* [FIX #1] Always run the non-blocking PWM ramp tick */
     Elevator_RampTick(ctx);

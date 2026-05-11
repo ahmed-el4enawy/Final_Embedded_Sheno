@@ -74,6 +74,9 @@ static volatile uint8 spiLastRxSeq    = 0xFF;
 /* [FIX #4] SPI timeout tracked via sysTickMs — NOT telemetry period */
 static volatile uint32 spiLastGoodRxTick = 0;
 
+/* [NEW] Checksum failure counter for telemetry */
+volatile uint32 checksumErrorCount = 0;
+
 /* Door timer callback (shared between master/slave) */
 /* Forward declaration — defined after localElev */
 static void DoorTimerCb(void);
@@ -123,6 +126,7 @@ static void BuildLocalFrame(void) {
 static boolean ParseRemoteFrame(void) {
     SpiFrameData fd;
     if (!SpiProto_Unpack(spiRxBuf, &fd)) {
+        checksumErrorCount++;
         return FALSE;
     }
 
@@ -300,6 +304,32 @@ void SysTick_Handler(void) {
 }
 
 /* ================================================================== */
+/*  [NEW] Independent Watchdog (IWDG)                                  */
+/* ================================================================== */
+#define IWDG_BASE            0x40003000UL
+#define IWDG_KR              (*(volatile uint32 *)(IWDG_BASE + 0x00))
+#define IWDG_PR              (*(volatile uint32 *)(IWDG_BASE + 0x04))
+#define IWDG_RLR             (*(volatile uint32 *)(IWDG_BASE + 0x08))
+#define IWDG_SR              (*(volatile uint32 *)(IWDG_BASE + 0x0C))
+
+static void Iwdg_Init(void) {
+    IWDG_KR  = 0x5555;      /* Enable register access */
+    IWDG_PR  = 4;           /* Prescaler = 64 (32kHz / 64 = 500Hz) */
+    IWDG_RLR = 2000;        /* Reload = 2000 (2000 / 500Hz = 4 seconds) */
+    IWDG_KR  = 0xAAAA;      /* Refresh / Start */
+    IWDG_KR  = 0xCCCC;      /* Start watchdog */
+}
+
+static void Iwdg_Refresh(void) {
+    IWDG_KR = 0xAAAA;
+}
+
+/* ================================================================== */
+/*  System Control Block (SCB) - for System Handler Priorities        */
+/* ================================================================== */
+#define SCB_SHPR3            (*(volatile uint32 *)0xE000ED20UL)
+
+/* ================================================================== */
 /*  Peripheral initialisation                                          */
 /* ================================================================== */
 
@@ -310,16 +340,22 @@ static void System_Init(void) {
     /* Set NVIC priority grouping: 4 bits preemption, 0 bits sub */
     Nvic_SetPriorityGrouping(3);
 
-    Rcc_Enable(RCC_GPIOA);
-    Rcc_Enable(RCC_GPIOB);
-    Rcc_Enable(RCC_GPIOC);
+    /* Set SysTick priority to lowest (15) so it doesn't preempt EXTI/SPI */
+    SCB_SHPR3 |= (15UL << 24);
+
+    Rcc_Enable(CABIN_BTN_RCC);
+    Rcc_Enable(EMERG_BTN_RCC);
+    Rcc_Enable(FLOOR_SENS_RCC);
+#if IS_MASTER_BOARD
+    Rcc_Enable(HALL_BTN_RCC);
+#endif
     Rcc_Enable(RCC_SYSCFG);
     Rcc_Enable(RCC_TIM2);
-    Rcc_Enable(RCC_TIM3);
-    Rcc_Enable(RCC_TIM4);
-    Rcc_Enable(RCC_TIM5);
-    Rcc_Enable(RCC_USART1);
-    Rcc_Enable(RCC_SPI1);
+    Rcc_Enable(MOTOR_PWM_RCC);
+    Rcc_Enable(TELEMETRY_TIMER == TIMER4 ? RCC_TIM4 : RCC_TIM2); /* mapping simplified */
+    Rcc_Enable(DOOR_TIMER == TIMER5 ? RCC_TIM5 : RCC_TIM2);
+    Rcc_Enable(UART_RCC_ID);
+    Rcc_Enable(SPI_RCC_ID);
     Rcc_Enable(RCC_DMA2);
 
     /* --- [FIX #1/#4/#5] SysTick — 1 ms global tick --- */
@@ -328,25 +364,25 @@ static void System_Init(void) {
     /* --- USART1 --- */
     Usart1_Init();
 
-    /* --- PWM motor LED (TIM3 CH3 on PB0, AF2) --- */
-    Gpio_Init(MOTOR_LED_PORT, MOTOR_LED_PIN, GPIO_AF, GPIO_PUSH_PULL);
-    Gpio_SetAF(MOTOR_LED_PORT, MOTOR_LED_PIN, MOTOR_LED_AF);
+    /* --- PWM motor LED (e.g. TIM3 CH1 on PC6, AF2) --- */
+    Gpio_Init(MOTOR_PWM_PORT, MOTOR_PWM_PIN, GPIO_AF, GPIO_PUSH_PULL);
+    Gpio_SetAF(MOTOR_PWM_PORT, MOTOR_PWM_PIN, MOTOR_PWM_AF);
     Pwm_Init(MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL, MOTOR_PWM_PSC, MOTOR_PWM_ARR);
     Pwm_SetDutyPercent(MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL, 0);
     Pwm_Start(MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL);
 
-    /* --- SPI1 pins (PA5=SCK, PA6=MISO, PA7=MOSI) --- */
-    Gpio_Init(SPI_PORT, SPI_SCK_PIN,  GPIO_AF, GPIO_PUSH_PULL);
-    Gpio_Init(SPI_PORT, SPI_MISO_PIN, GPIO_AF, GPIO_PUSH_PULL);
-    Gpio_Init(SPI_PORT, SPI_MOSI_PIN, GPIO_AF, GPIO_PUSH_PULL);
-    Gpio_SetAF(SPI_PORT, SPI_SCK_PIN,  SPI_AF);
-    Gpio_SetAF(SPI_PORT, SPI_MISO_PIN, SPI_AF);
-    Gpio_SetAF(SPI_PORT, SPI_MOSI_PIN, SPI_AF);
+    /* --- SPI1 pins (SCK, MISO, MOSI) --- */
+    Gpio_Init(SPI_GPIO_PORT, SPI_SCK_PIN,  GPIO_AF, GPIO_PUSH_PULL);
+    Gpio_Init(SPI_GPIO_PORT, SPI_MISO_PIN, GPIO_AF, GPIO_PUSH_PULL);
+    Gpio_Init(SPI_GPIO_PORT, SPI_MOSI_PIN, GPIO_AF, GPIO_PUSH_PULL);
+    Gpio_SetAF(SPI_GPIO_PORT, SPI_SCK_PIN,  SPI_AF);
+    Gpio_SetAF(SPI_GPIO_PORT, SPI_MISO_PIN, SPI_AF);
+    Gpio_SetAF(SPI_GPIO_PORT, SPI_MOSI_PIN, SPI_AF);
 
 #if IS_MASTER_BOARD
-    Spi_Init(SPI_1, SPI_MODE_MASTER, SPI_BAUD_DIV64);
+    Spi_Init(SPI_PERIPHERAL, SPI_MODE_MASTER, SPI_BAUD_DIVIDER);
 #else
-    Spi_Init(SPI_1, SPI_MODE_SLAVE, 0);
+    Spi_Init(SPI_PERIPHERAL, SPI_MODE_SLAVE, 0);
 #endif
 
     /* --- Elevator FSM --- */
@@ -379,9 +415,12 @@ static void System_Init(void) {
 #else
     /* Slave: pre-load TX and start async reception */
     BuildLocalFrame();
-    Spi_SlavePreload(SPI_1, spiTxBuf, SPI_FRAME_LEN);
-    Spi_SlaveStartAsync(SPI_1, SlaveRxCallback, spiRxBuf, SPI_FRAME_LEN);
+    Spi_SlavePreload(SPI_PERIPHERAL, spiTxBuf, SPI_FRAME_LEN);
+    Spi_SlaveStartAsync(SPI_PERIPHERAL, SlaveRxCallback, spiRxBuf, SPI_FRAME_LEN);
 #endif
+
+    /* [NEW] Independent Watchdog */
+    Iwdg_Init();
 
     Usart1_TransmitString("\r\n=== Elevator System Started ===\r\n");
 }
@@ -441,7 +480,7 @@ int main(void) {
         if (spiExchangeFlag && !Spi_MasterBusy()) {
             spiExchangeFlag = 0;
             BuildLocalFrame();
-            Spi_MasterTransferAsync(SPI_1, spiTxBuf, spiRxBuf,
+            Spi_MasterTransferAsync(SPI_PERIPHERAL, spiTxBuf, spiRxBuf,
                                     SPI_FRAME_LEN, MasterSpiDoneCb);
         }
 
@@ -497,7 +536,7 @@ int main(void) {
 
             /* Refresh TX buffer for next exchange */
             BuildLocalFrame();
-            Spi_SlavePreload(SPI_1, spiTxBuf, SPI_FRAME_LEN);
+            Spi_SlavePreload(SPI_PERIPHERAL, spiTxBuf, SPI_FRAME_LEN);
         }
 
         /* [FIX #4] Slave comm-fault: accurate 1 ms SysTick-based timeout.
@@ -544,11 +583,16 @@ int main(void) {
 #if IS_MASTER_BOARD
         Telemetry_Update(&localElev, &remoteElev,
                          spiCommFault ? FALSE : TRUE,
-                         Dispatcher_GetPendingHallCalls());
+                         Dispatcher_GetPendingHallCalls(),
+                         checksumErrorCount);
 #else
         Telemetry_Update(&localElev, (ElevatorContext *)0,
-                         spiCommFault ? FALSE : TRUE, 0);
+                         spiCommFault ? FALSE : TRUE, 0,
+                         checksumErrorCount);
 #endif
+
+        /* -------- Refresh Watchdog -------- */
+        Iwdg_Refresh();
     }
 
     return 0;

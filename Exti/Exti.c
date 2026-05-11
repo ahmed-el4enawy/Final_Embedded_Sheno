@@ -5,6 +5,7 @@
  *  Author    : AbdallahDarwish
  */
 #include "Exti.h"
+#include "Board_Config.h"
 
 typedef struct {
     volatile uint32 IMR;
@@ -36,7 +37,11 @@ typedef struct {
 
 
 ExtiCallback ExtiCallbacks[16] = {0};
-uint8 ExtiLineNumberNvicMap[16] = {6, 7, 8, 9, 10, 23, 23, 23, 23, 23, 40, 40, 40, 40, 40, 40};
+uint8 ExtiLineNumberNvicMap[16] = {
+    IRQ_EXTI0, IRQ_EXTI1, IRQ_EXTI2, IRQ_EXTI3, IRQ_EXTI4, 
+    IRQ_EXTI9_5, IRQ_EXTI9_5, IRQ_EXTI9_5, IRQ_EXTI9_5, IRQ_EXTI9_5, 
+    IRQ_EXTI15_10, IRQ_EXTI15_10, IRQ_EXTI15_10, IRQ_EXTI15_10, IRQ_EXTI15_10, IRQ_EXTI15_10
+};
 
 void Exti_Init(uint8 LineNumber, uint8 PortName, uint8 EdgeType, ExtiCallback Callback) {
     uint8 sysConfigIndex = LineNumber / 4;

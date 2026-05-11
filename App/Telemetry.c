@@ -44,6 +44,10 @@ static volatile uint8 telemetryReady = 0;
  * Must NOT be on the stack. */
 static char telemetryLine[128];
 
+/* [NEW] Tracking last reported state for transition telemetry */
+static ElevatorState lastStateA = ELEV_IDLE;
+static ElevatorState lastStateB = ELEV_IDLE;
+
 /* Timer callback sets the flag (runs in ISR context) */
 static void Telemetry_TimerCallback(void) {
     telemetryReady = 1;
@@ -79,6 +83,23 @@ static void appendFloor(char *buf, uint32 *pos, uint8 floor) {
     (*pos)++;
 }
 
+/* Simple uint-to-string for error counts */
+static void appendUint(char *buf, uint32 *pos, uint32 val) {
+    if (val == 0) {
+        buf[(*pos)++] = '0';
+        return;
+    }
+    char tmp[10];
+    int8 i = 0;
+    while (val > 0) {
+        tmp[i++] = digitChar(val % 10);
+        val /= 10;
+    }
+    while (i > 0) {
+        buf[(*pos)++] = tmp[--i];
+    }
+}
+
 /* Copy a const string into buf */
 static void appendStr(char *buf, uint32 *pos, const char *s) {
     while (*s) {
@@ -100,7 +121,7 @@ static uint16 Telemetry_Strlen(const char *s) {
 
 void Telemetry_Init(void) {
     telemetryReady = 0;
-    /* Start first 500 ms period */
+    /* Start first period */
     Timer_DelayMsAsync(TELEMETRY_TIMER, TELEMETRY_PERIOD_MS,
                        Telemetry_TimerCallback);
 }
@@ -108,7 +129,8 @@ void Telemetry_Init(void) {
 boolean Telemetry_Update(const ElevatorContext *elevA,
                       const ElevatorContext *elevB,
                       boolean commOk,
-                      uint8 hallCalls) {
+                      uint8 hallCalls,
+                      uint32 spiErrors) {
     if (!telemetryReady) return FALSE;
     telemetryReady = 0;
 
@@ -119,13 +141,27 @@ boolean Telemetry_Update(const ElevatorContext *elevA,
 
     uint32 p = 0;
 
+#if IS_MASTER_BOARD
     appendStr(telemetryLine, &p, "[TEL] A:");
+#else
+    appendStr(telemetryLine, &p, "[TEL] B:");
+#endif
+    if (elevA->state != lastStateA) {
+        appendStr(telemetryLine, &p, StateStr((uint8)lastStateA));
+        appendStr(telemetryLine, &p, "->");
+        lastStateA = elevA->state;
+    }
     appendStr(telemetryLine, &p, StateStr((uint8)elevA->state));
     appendStr(telemetryLine, &p, " F");
     appendFloor(telemetryLine, &p, elevA->currentFloor);
 
     if (elevB) {
         appendStr(telemetryLine, &p, " | B:");
+        if (elevB->state != lastStateB) {
+            appendStr(telemetryLine, &p, StateStr((uint8)lastStateB));
+            appendStr(telemetryLine, &p, "->");
+            lastStateB = elevB->state;
+        }
         appendStr(telemetryLine, &p, StateStr((uint8)elevB->state));
         appendStr(telemetryLine, &p, " F");
         appendFloor(telemetryLine, &p, elevB->currentFloor);
@@ -133,6 +169,9 @@ boolean Telemetry_Update(const ElevatorContext *elevA,
 
     appendStr(telemetryLine, &p, " | SPI:");
     appendStr(telemetryLine, &p, commOk ? "OK" : "FAULT");
+    appendStr(telemetryLine, &p, " (ERR:");
+    appendUint(telemetryLine, &p, spiErrors);
+    appendStr(telemetryLine, &p, ")");
 
     appendStr(telemetryLine, &p, " | Hall:0x");
     /* Hex nibble for hall calls */

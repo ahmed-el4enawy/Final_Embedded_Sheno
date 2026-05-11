@@ -31,8 +31,7 @@ typedef enum {
 /*  PWM ramp context  [FIX #1]                                   */
 /*  Non-blocking speed ramping via SysTick timestamp checks.     */
 /* ============================================================ */
-#define RAMP_STEP_PERCENT    5U     /* duty change per step          */
-#define RAMP_STEP_INTERVAL   20U    /* ms between ramp steps         */
+/* Timing constants moved to Board_Config.h */
 
 typedef struct {
     volatile uint8  currentDuty;    /* actual duty cycle right now    */
@@ -47,6 +46,7 @@ typedef void (*DoorTimerStartFunc)(void);
 
 typedef struct {
     volatile ElevatorState  state;
+    volatile ElevatorState  prevState;       /* For transition telemetry        */
     volatile uint8          currentFloor;    /* 1 – 4                           */
     volatile uint8          direction;       /* DIR_UP, DIR_DOWN, DIR_NONE      */
     volatile uint8          cabinRequests;   /* Bitmask: bit0=F1 .. bit3=F4     */

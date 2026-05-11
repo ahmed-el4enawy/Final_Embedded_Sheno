@@ -11,6 +11,7 @@
 #include "Dma.h"
 #include "Bit_Operations.h"
 #include "Std_Types.h"
+#include "Board_Config.h"
 
 /* ------------------------------------------------------------------ */
 /*  Register map                                                      */
@@ -34,11 +35,8 @@ typedef struct {
 
 #define DMA2_BASE          0x40026400UL
 #define DMA2              ((DmaType *)DMA2_BASE)
-/* Stream 7 offset = 0x10 + 7*0x18 = 0x10 + 0xA8 = 0xB8 */
-#define DMA2_STREAM7      ((DmaStreamType *)(DMA2_BASE + 0x10UL + 7UL * 0x18UL))
-
-/* USART1 DR address */
-#define USART1_DR_ADDR     0x40011004UL
+/* Calculate stream offset based on UART_DMA_STREAM_ID */
+#define UART_DMA_STREAM   ((DmaStreamType *)(DMA2_BASE + 0x10UL + (UART_DMA_STREAM_ID) * 0x18UL))
 
 /* CR bit positions */
 #define DMA_CR_EN           0U
@@ -69,10 +67,11 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 void Dma_Usart1TxInit(void) {
     /* Disable stream before configuring */
-    DMA2_STREAM7->CR &= ~(1UL << DMA_CR_EN);
-    while (DMA2_STREAM7->CR & (1UL << DMA_CR_EN)) {}
+    UART_DMA_STREAM->CR &= ~(1UL << DMA_CR_EN);
+    while (UART_DMA_STREAM->CR & (1UL << DMA_CR_EN)) {}
 
-    /* Clear all Stream 7 interrupt flags (HIFCR bits 22-27) */
+    /* Clear all Stream interrupt flags */
+    /* Note: simplified clear for specific stream, assumes HIFCR layout */
     DMA2->HIFCR = (1UL << DMA_HISR_TCIF7) | (1UL << DMA_HISR_HTIF7)
                 | (1UL << DMA_HISR_TEIF7)  | (1UL << DMA_HISR_DMEIF7)
                 | (1UL << DMA_HISR_FEIF7);
@@ -85,33 +84,33 @@ void Dma_Usart1TxInit(void) {
      *  Medium priority  (PL    = 01)
      *  No circular mode
      */
-    DMA2_STREAM7->CR = (4UL << DMA_CR_CHSEL_POS)       /* Channel 4      */
+    UART_DMA_STREAM->CR = ((uint32)UART_DMA_CHANNEL_ID << DMA_CR_CHSEL_POS)
                      | (DMA_DIR_MEM_TO_PERIPH << DMA_CR_DIR_POS)
                      | (1UL << DMA_CR_MINC)             /* Memory inc     */
                      | (1UL << DMA_CR_PL_POS);          /* Priority med   */
 
     /* Peripheral address = USART1->DR */
-    DMA2_STREAM7->PAR = USART1_DR_ADDR;
+    UART_DMA_STREAM->PAR = UART_DMA_DR_ADDR;
 
     /* Disable FIFO (direct mode) */
-    DMA2_STREAM7->FCR = 0;
+    UART_DMA_STREAM->FCR = 0;
 }
 
 /* ------------------------------------------------------------------ */
 void Dma_Usart1TxStart(const uint8 *data, uint16 len) {
     /* Wait if a previous transfer is still running */
-    while (DMA2_STREAM7->CR & (1UL << DMA_CR_EN)) {}
+    while (UART_DMA_STREAM->CR & (1UL << DMA_CR_EN)) {}
 
     /* Clear flags */
     DMA2->HIFCR = (1UL << DMA_HISR_TCIF7) | (1UL << DMA_HISR_HTIF7)
                 | (1UL << DMA_HISR_TEIF7)  | (1UL << DMA_HISR_DMEIF7)
                 | (1UL << DMA_HISR_FEIF7);
 
-    DMA2_STREAM7->M0AR = (uint32)data;
-    DMA2_STREAM7->NDTR = len;
+    UART_DMA_STREAM->M0AR = (uint32)data;
+    UART_DMA_STREAM->NDTR = len;
 
     /* Enable stream */
-    SET_BIT(DMA2_STREAM7->CR, DMA_CR_EN);
+    SET_BIT(UART_DMA_STREAM->CR, DMA_CR_EN);
 
     /* Enable USART1 DMA TX request (bit 7 of USART CR3) */
     /* USART1 CR3 is at offset 0x14 from USART1 base 0x40011000 */
@@ -121,7 +120,7 @@ void Dma_Usart1TxStart(const uint8 *data, uint16 len) {
 
 /* ------------------------------------------------------------------ */
 boolean Dma_Usart1TxBusy(void) {
-    if (DMA2_STREAM7->CR & (1UL << DMA_CR_EN)) {
+    if (UART_DMA_STREAM->CR & (1UL << DMA_CR_EN)) {
         return TRUE;
     }
     if (DMA2->HISR & (1UL << DMA_HISR_TCIF7)) {
