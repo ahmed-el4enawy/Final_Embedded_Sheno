@@ -90,7 +90,7 @@ static void appendUint(char *buf, uint32 *pos, uint32 val) {
         return;
     }
     char tmp[10];
-    int8 i = 0;
+    sint8 i = 0;
     while (val > 0) {
         tmp[i++] = digitChar(val % 10);
         val /= 10;

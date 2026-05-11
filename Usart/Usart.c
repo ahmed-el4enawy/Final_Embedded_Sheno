@@ -55,6 +55,7 @@ void Usart1_Init(void) {
     USART1->CR1 |= (1 << USART_CR1_UE_Pos);
 }
 
+uint8 Usart1_TransmitByte(uint8 Byte) {
     /* Polling is ONLY allowed for UART debug output per project statement. */
     if (USART1->SR & USART_SR_TXE_Msk) {
         USART1->DR = Byte;

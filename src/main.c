@@ -98,6 +98,7 @@ static void DoorTimerCb(void) {
  * @brief Build a TX frame from the local elevator state.
  */
 static void BuildLocalFrame(void) {
+    SpiFrameData fd;
     uint32 pm = Enter_Critical();
     fd.state         = Elevator_GetPacketState(&localElev);
     fd.currentFloor  = localElev.currentFloor;
