@@ -48,12 +48,15 @@ static char telemetryLine[128];
 static ElevatorState lastStateA = ELEV_IDLE;
 static ElevatorState lastStateB = ELEV_IDLE;
 
-/* Timer callback sets the flag (runs in ISR context) */
 static void Telemetry_TimerCallback(void) {
     telemetryReady = 1;
+    
+    // --- FIX: Add a hardware heartbeat ---
+    // Toggle the onboard LED (assuming PC13, or change to an unused pin)
+    // Gpio_TogglePin(GPIOC, 13); 
+
     /* Re-arm periodic timer */
-    Timer_DelayMsAsync(TELEMETRY_TIMER, TELEMETRY_PERIOD_MS,
-                       Telemetry_TimerCallback);
+    Timer_DelayMsAsync(TELEMETRY_TIMER, TELEMETRY_PERIOD_MS, Telemetry_TimerCallback);
 }
 
 /* ------------------------------------------------------------------ */
@@ -192,8 +195,9 @@ boolean Telemetry_Update(const ElevatorContext *elevA,
      *   SET_BIT(DMA2_Stream7->CR, EN);
      *   SET_BIT(USART1->CR3, DMAT);
      * Zero CPU cycles consumed for the actual byte transmission. */
-    Dma_Usart1TxStart((const uint8 *)telemetryLine,
-                      Telemetry_Strlen(telemetryLine));
+    // Dma_Usart1TxStart((const uint8 *)telemetryLine,
+    //                   Telemetry_Strlen(telemetryLine));
+    Usart1_TransmitString(telemetryLine);
     return TRUE;
 }
 

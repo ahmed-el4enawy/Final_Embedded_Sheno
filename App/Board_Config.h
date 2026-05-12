@@ -34,7 +34,7 @@
 /*  1. BOARD SELECTION                                                        */
 /* ========================================================================== */
 /* Set to 1 for Master (Board A), 0 for Slave (Board B) */
-#define IS_MASTER_BOARD         1
+#define IS_MASTER_BOARD         0
 
 /* ========================================================================== */
 /*  2. SPI CONFIGURATION (IPC Link)                                          */
@@ -71,7 +71,7 @@
 #define UART_TX_PIN             9U
 #define UART_RX_PIN             10U
 #define UART_AF                 GPIO_AF7
-#define UART_BAUD_RATE          9600
+#define UART_BAUD_RATE          115200
 
 /* ========================================================================== */
 /*  4. PWM CONFIGURATION (Motor Simulation LED)                               */

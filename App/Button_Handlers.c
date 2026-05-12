@@ -193,7 +193,7 @@ void Buttons_Init(ElevatorContext *ctx) {
 
     /* Give emergency the HIGHEST NVIC priority */
     SetIrqPriority(IRQ_EXTI15_10, PRIO_EMERGENCY);
-
+    
 
     /* ---- Floor sensors (pull-down, rising edge) ---- */
     Gpio_Init(FLOOR_SENS_PORT, FLOOR_SENS_PIN_F1, GPIO_INPUT, GPIO_PULL_DOWN);

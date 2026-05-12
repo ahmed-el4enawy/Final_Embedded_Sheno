@@ -367,7 +367,8 @@ static void System_Init(void) {
     Rcc_Enable(DOOR_TIMER == TIMER5 ? RCC_TIM5 : RCC_TIM2);
     Rcc_Enable(UART_RCC_ID);
     Rcc_Enable(SPI_RCC_ID);
-    Rcc_Enable(RCC_DMA2);
+    //Rcc_Enable(RCC_DMA2);
+    *((volatile uint32 *)0x40023830UL) |= (1UL << 22);
 
     /* --- [FIX #1/#4/#5] SysTick — 1 ms global tick --- */
     SysTick_Init();

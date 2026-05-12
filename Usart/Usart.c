@@ -142,9 +142,13 @@ char* Usart1_ReadLine(char *buffer, uint32 maxLen) {
 }
 
 void USART1_IRQHandler(void) {
-    // Check if RXNE interrupt is the source
     if (USART1->SR & USART_SR_RXNE) {
-        uint8 byte = USART1->DR;   // reading DR clears RXNE flag
+        uint8 byte = USART1->DR;
         RB_Enqueue(&usart1_rx_ring, byte);
+    }
+    // Check and clear Overrun Error
+    if (USART1->SR & (1 << 3)) { // ORE bit
+        volatile uint32 dummy = USART1->DR; // Read DR to clear ORE
+        (void)dummy;
     }
 }
