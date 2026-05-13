@@ -6,6 +6,10 @@
  *
  *  EXTI callback wiring for cabin buttons, hallway buttons,
  *  emergency stop, and floor sensors.
+ *
+ *  [FIX #7] All buttons are now interrupt-driven via EXTI.
+ *  Cabin buttons moved to PB12-PB15 (EXTI12-15) to avoid
+ *  the EXTI mux conflict with floor sensors (PC0-3 on EXTI0-3).
  */
 
 #ifndef BUTTON_HANDLERS_H
@@ -20,11 +24,5 @@
  * @param  ctx  Pointer to the local elevator context
  */
 void Buttons_Init(ElevatorContext *ctx);
-
-/**
- * @brief  Periodic non-blocking scan for cabin buttons.
- *         Must be called every ~10ms from the main loop.
- */
-void CabinButtons_Scan(void);
 
 #endif /* BUTTON_HANDLERS_H */

@@ -10,17 +10,16 @@
  *  Board A (Master): Elevator A FSM + Dispatcher + SPI Master + Hallway Buttons
  *  Board B (Slave) : Elevator B FSM + SPI Slave (receives hall calls from master)
  *
- *  [REDESIGN] Main loop execution order fix:
- *  1. Sample inputs (cabin buttons)
- *  2. Run FSM (consumes events, produces state)
- *  3. Run Dispatcher (assigns hall calls)
- *  4. Build SPI frame AFTER FSM — sends fresh data
- *  5. SPI exchange
- *  6. Parse response
- *  7. Telemetry
+ *  [REDESIGN] Main loop execution order:
+ *  1. Run FSM (consumes events, produces state)
+ *  2. Run Dispatcher (assigns hall calls)
+ *  3. Build SPI frame AFTER FSM — sends fresh data
+ *  4. SPI exchange
+ *  5. Parse response
+ *  6. Telemetry
  *
- *  This eliminates the race between BuildLocalFrame() snapshotting
- *  stale state and Elevator_Run() updating it.
+ *  [FIX #7] Cabin buttons moved to PB12-PB15 (EXTI12-15).
+ *  All inputs are now interrupt-driven — no polling in main loop.
  */
 
 #include "Std_Types.h"
@@ -321,6 +320,7 @@ static void System_Init(void) {
     Rcc_Enable(CABIN_BTN_RCC);
     Rcc_Enable(EMERG_BTN_RCC);
     Rcc_Enable(FLOOR_SENS_RCC);
+    Rcc_Enable(SPI_GPIO_RCC);      /* GPIOA for SPI1 pins (PA4-PA7) + UART (PA9-PA10) */
 #if IS_MASTER_BOARD
     Rcc_Enable(HALL_BTN_RCC);
 #endif
@@ -406,25 +406,10 @@ int main(void) {
 
     System_Init();
 
-    /* State for Cabin Button Periodic Scan */
-    static uint32 lastCabinScanTick = 0;
-
     while (1) {
 
         /* ======================================================== */
-        /*  STEP 1: SAMPLE INPUTS                                    */
-        /*  Cabin buttons polled every ~10ms to avoid EXTI conflict. */
-        /* ======================================================== */
-        {
-            uint32 elapsed = sysTickMs - lastCabinScanTick;
-            if (elapsed >= 10) {
-                lastCabinScanTick = sysTickMs;
-                CabinButtons_Scan();
-            }
-        }
-
-        /* ======================================================== */
-        /*  STEP 2: RUN LOCAL ELEVATOR FSM                           */
+        /*  STEP 1: RUN LOCAL ELEVATOR FSM                           */
         /*  Consumes floor sensor events, produces state transitions.*/
         /*  Must run BEFORE BuildLocalFrame so frame carries fresh   */
         /*  state data.                                              */
@@ -433,7 +418,7 @@ int main(void) {
 
 #if IS_MASTER_BOARD
         /* ======================================================== */
-        /*  STEP 3: RUN DISPATCHER (Master only)                     */
+        /*  STEP 2: RUN DISPATCHER (Master only)                     */
         /*  Assigns pending hall calls to elevators A/B.             */
         /*  Runs AFTER FSM so elevator states are current.           */
         /* ======================================================== */
@@ -441,7 +426,7 @@ int main(void) {
                        spiCommFault ? TRUE : FALSE);
 
         /* ======================================================== */
-        /*  STEP 4: SPI EXCHANGE                                     */
+        /*  STEP 3: SPI EXCHANGE                                     */
         /*  BuildLocalFrame runs AFTER FSM+Dispatcher = fresh data. */
         /*  Non-blocking state machine sends one byte per iteration. */
         /* ======================================================== */
@@ -493,7 +478,7 @@ int main(void) {
         }
 
         /* ======================================================== */
-        /*  STEP 5: PROCESS SPI RESPONSE                             */
+        /*  STEP 4: PROCESS SPI RESPONSE                             */
         /* ======================================================== */
         if (spiRxReady) {
             spiRxReady = 0;
@@ -564,7 +549,7 @@ int main(void) {
 #endif
 
         /* ======================================================== */
-        /*  STEP 6: TELEMETRY                                        */
+        /*  STEP 5: TELEMETRY                                        */
         /* ======================================================== */
 #if IS_MASTER_BOARD
         Telemetry_Update(&localElev, &remoteElev,
@@ -578,7 +563,7 @@ int main(void) {
 #endif
 
         /* ======================================================== */
-        /*  STEP 7: WATCHDOG REFRESH                                 */
+        /*  STEP 6: WATCHDOG REFRESH                                 */
         /* ======================================================== */
         Iwdg_Refresh();
     }

@@ -8,16 +8,16 @@
  *  [PROTEUS MAPPING - BOARD A (MASTER)]
  *  - SPI1: SCK=PA5, MISO=PA6, MOSI=PA7, CS=PA4
  *  - UART1: TX=PA9, RX=PA10
- *  - Cabin: PA0-PA3
+ *  - Cabin: PB12-PB15  (was PA0-PA3, moved to avoid EXTI0-3 conflict)
  *  - Hall: PB4-PB9
  *  - Emergency: PB10
  *  - Floor: PC0-PC3
  *  - PWM: PC6 (TIM3 CH1)
  *
  *  [PROTEUS MAPPING - BOARD B (SLAVE)]
- *  - SPI1: SCK=PA5, MISO=PA6, MOSI=PA7, CS=PB1
+ *  - SPI1: SCK=PA5, MISO=PA6, MOSI=PA7, CS=PA4
  *  - UART1: TX=PA9, RX=PA10
- *  - Cabin: PA0-PA3
+ *  - Cabin: PB12-PB15  (was PA0-PA3, moved to avoid EXTI0-3 conflict)
  *  - Emergency: PB10
  *  - Floor: PC0-PC3
  *  - PWM: PC6 (TIM3 CH1)
@@ -104,14 +104,20 @@
 /*  5. EXTI CONFIGURATION (Buttons & Sensors)                                 */
 /* ========================================================================== */
 
-/* Cabin Floor Buttons (PA0 - PA3) */
-#define CABIN_BTN_PORT          GPIO_A
-#define CABIN_BTN_RCC           RCC_GPIOA
-#define CABIN_BTN_EXTI_PORT     EXTI_PORT_A
-#define CABIN_BTN_PIN_F1        0U
-#define CABIN_BTN_PIN_F2        1U
-#define CABIN_BTN_PIN_F3        2U
-#define CABIN_BTN_PIN_F4        3U
+/* Cabin Floor Buttons (PB12 - PB15)
+ * Moved from PA0-PA3 to avoid EXTI line conflict with Floor Sensors
+ * (PC0-PC3).  PA0 and PC0 share EXTI0, etc.  PB12-PB15 use EXTI12-15
+ * which are free, so both cabin buttons and floor sensors get true
+ * hardware interrupts now.
+ * Note: shares EXTI15_10 IRQ with Emergency (PB10).
+ */
+#define CABIN_BTN_PORT          GPIO_B
+#define CABIN_BTN_RCC           RCC_GPIOB
+#define CABIN_BTN_EXTI_PORT     EXTI_PORT_B
+#define CABIN_BTN_PIN_F1        12U
+#define CABIN_BTN_PIN_F2        13U
+#define CABIN_BTN_PIN_F3        14U
+#define CABIN_BTN_PIN_F4        15U
 
 /* Emergency Stop Button (PB10) */
 #define EMERG_BTN_PORT          GPIO_B
@@ -161,8 +167,8 @@
 /* ========================================================================== */
 /*  7. IRQ PRIORITIES (0 = Highest)                                          */
 /* ========================================================================== */
-/* EXTI15_10 handles Emergency (PB10).
- * EXTI0-3 handles Cabin Buttons (PA0-3) AND Floor Sensors (PC0-3).
+/* EXTI15_10 handles Emergency (PB10) AND Cabin Buttons (PB12-15).
+ * EXTI0-3 handles Floor Sensors (PC0-3).
  * EXTI4, 9_5 handle Hall Buttons (PB4-9).
  */
 #define PRIO_EMERGENCY          0U

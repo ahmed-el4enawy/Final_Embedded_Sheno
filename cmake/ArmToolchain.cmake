@@ -3,7 +3,7 @@ set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-set(ARM_DIR  "C:/Users/user/Desktop/Batman/Lectures/New Lectures/Downloads/arm-gnu-toolchain-15.2.rel1-mingw-w64-x86_64-arm-none-eabi")
+set(ARM_DIR  "C:/Users/amkma/Downloads/Programs/arm-gnu-toolchain-15.2.rel1-mingw-w64-x86_64-arm-none-eabi")
 set(ARM_TOOLCHAIN_DIR ${ARM_DIR}/bin)
 
 if(MINGW OR CYGWIN OR WIN32)

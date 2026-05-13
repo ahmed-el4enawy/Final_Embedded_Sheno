@@ -76,32 +76,25 @@ static boolean Debounce_Check(uint8 btnId) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Cabin button periodic scanning (Non-blocking)                     */
-/*  [FIX #6] Replaces EXTI due to PA0/PC0 multiplexer conflict.       */
+/*  Cabin button EXTI callbacks                                       */
+/*  [FIX #7] Moved from PA0-PA3 (polled) to PB12-PB15 (EXTI12-15).   */
+/*  Now fully interrupt-driven — no polling required.                  */
 /* ------------------------------------------------------------------ */
-void CabinButtons_Scan(void) {
-    if (!localCtx) return;
-
-    /* Track last pin states for falling-edge detection. 
-     * Pull-ups mean '1' is unpressed, '0' is pressed. */
-    static uint8 lastState[4] = {1, 1, 1, 1};
-    uint8 currState[4];
-
-    currState[0] = Gpio_ReadPin(CABIN_BTN_PORT, CABIN_BTN_PIN_F1);
-    currState[1] = Gpio_ReadPin(CABIN_BTN_PORT, CABIN_BTN_PIN_F2);
-    currState[2] = Gpio_ReadPin(CABIN_BTN_PORT, CABIN_BTN_PIN_F3);
-    currState[3] = Gpio_ReadPin(CABIN_BTN_PORT, CABIN_BTN_PIN_F4);
-
-    uint8 i;
-    for (i = 0; i < 4; i++) {
-        if (lastState[i] == 1 && currState[i] == 0) {
-            /* Falling edge detected */
-            if (Debounce_Check(BTN_ID_CABIN_F1 + i)) {
-                Elevator_AddCabinRequest(localCtx, i + 1);
-            }
-        }
-        lastState[i] = currState[i];
-    }
+static void CabinBtn_F1(void) {
+    if (Debounce_Check(BTN_ID_CABIN_F1))
+        Elevator_AddCabinRequest(localCtx, 1);
+}
+static void CabinBtn_F2(void) {
+    if (Debounce_Check(BTN_ID_CABIN_F2))
+        Elevator_AddCabinRequest(localCtx, 2);
+}
+static void CabinBtn_F3(void) {
+    if (Debounce_Check(BTN_ID_CABIN_F3))
+        Elevator_AddCabinRequest(localCtx, 3);
+}
+static void CabinBtn_F4(void) {
+    if (Debounce_Check(BTN_ID_CABIN_F4))
+        Elevator_AddCabinRequest(localCtx, 4);
 }
 
 /* ------------------------------------------------------------------ */
@@ -182,11 +175,28 @@ void Buttons_Init(ElevatorContext *ctx) {
         }
     }
 
-    /* ---- Cabin floor buttons (pull-up, now polled) ---- */
+    /* ---- Cabin floor buttons (pull-up, falling edge, EXTI) ---- */
+    /* [FIX #7] Now on PB12-PB15 (EXTI12-15) — no conflict with
+     * floor sensors (PC0-3 on EXTI0-3).  Fully interrupt-driven. */
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F1, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F2, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F3, GPIO_INPUT, GPIO_PULL_UP);
     Gpio_Init(CABIN_BTN_PORT, CABIN_BTN_PIN_F4, GPIO_INPUT, GPIO_PULL_UP);
+
+    Exti_Init(CABIN_BTN_PIN_F1, CABIN_BTN_EXTI_PORT, EXTI_EDGE_FALLING, CabinBtn_F1);
+    Exti_Init(CABIN_BTN_PIN_F2, CABIN_BTN_EXTI_PORT, EXTI_EDGE_FALLING, CabinBtn_F2);
+    Exti_Init(CABIN_BTN_PIN_F3, CABIN_BTN_EXTI_PORT, EXTI_EDGE_FALLING, CabinBtn_F3);
+    Exti_Init(CABIN_BTN_PIN_F4, CABIN_BTN_EXTI_PORT, EXTI_EDGE_FALLING, CabinBtn_F4);
+
+    Exti_Enable(CABIN_BTN_PIN_F1);
+    Exti_Enable(CABIN_BTN_PIN_F2);
+    Exti_Enable(CABIN_BTN_PIN_F3);
+    Exti_Enable(CABIN_BTN_PIN_F4);
+
+    /* Cabin button NVIC priority — shares EXTI15_10 with Emergency.
+     * Emergency sets this IRQ to PRIO_EMERGENCY (0) below, which
+     * takes precedence.  Both callbacks are lightweight (flag + debounce)
+     * so sharing the highest-priority IRQ is acceptable. */
 
 
     /* ---- Emergency stop (pull-up, falling edge) ---- */
@@ -215,7 +225,6 @@ void Buttons_Init(ElevatorContext *ctx) {
     Exti_Enable(FLOOR_SENS_PIN_F4);
 
     /* Floor sensor NVIC priority (PC0-PC3 are on EXTI0-3) */
-    /* Note: PA0-PA3 are now polled, so EXTI0-3 belong solely to PC0-PC3. */
     SetIrqPriority(IRQ_EXTI0, PRIO_FLOOR_SENS);
     SetIrqPriority(IRQ_EXTI1, PRIO_FLOOR_SENS);
     SetIrqPriority(IRQ_EXTI2, PRIO_FLOOR_SENS);
