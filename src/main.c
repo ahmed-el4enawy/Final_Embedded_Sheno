@@ -29,6 +29,8 @@
 #include "Pwm.h"
 #include "Usart.h"
 #include "Spi.h"
+#include "Spi_Private.h"   /* SpiType for master state machine */
+#include "Bit_Operations.h" /* READ_BIT for master state machine */
 #include "Dma.h"
 
 /* Application */
@@ -425,7 +427,7 @@ static void System_Init(void) {
     Timer_DelayMsAsync(SPI_EXCHANGE_TIMER, SPI_EXCHANGE_PERIOD_MS,
                        SpiExchangeTimerCb);
 #else
-    /* Slave: pre-load TX and start async reception */
+    /* Slave: pre-load TX and start ISR-driven reception */
     BuildLocalFrame();
     Spi_SlavePreload(SPI_PERIPHERAL, spiTxBuf, SPI_FRAME_LEN);
     Spi_SlaveStartAsync(SPI_PERIPHERAL, SlaveRxCallback, spiRxBuf, SPI_FRAME_LEN);
@@ -482,34 +484,65 @@ int main(void) {
         Elevator_Run(&localElev);
 
 #if IS_MASTER_BOARD
-        /* -------- Master: 50 ms non-blocking SPI exchange -------- */
-        /* [NON-BLOCKING MASTER]
-         *
-         * Previous code used blocking Spi_TransmitReceive() which polled
-         * TXE/RXNE in a while loop.  If the slave was unresponsive, the
-         * master CPU would hang indefinitely.
-         *
-         * New flow:
-         *   1. Timer ISR sets spiExchangeFlag every 50 ms.
-         *   2. Main loop builds the TX frame and calls
-         *      Spi_MasterTransferAsync() which enables TXEIE/RXNEIE.
-         *   3. SPI1 ISR feeds bytes from TxBuf, collects into RxBuf.
-         *   4. On completion, ISR invokes MasterSpiDoneCb which sets
-         *      spiRxReady = 1 and deasserts CS.
-         *   5. Main loop sees spiRxReady on the NEXT iteration and
-         *      parses the frame / runs the dispatcher.
-         *
-         * CPU is NEVER blocked polling SPI status registers. */
+        /* ============================================================ */
+        /*  [NON-BLOCKING MASTER] SPI state machine                      */
+        /*  Sends ONE byte per main-loop iteration — never blocks.       */
+        /*  Natural inter-byte gap gives the slave ISR time to respond.  */
+        /* ============================================================ */
+        {
+            /* State machine locals (persist across iterations) */
+            static uint8 spiSmState = 0;  /* 0=idle, 1=sending, 2=wait_bsy */
+            static uint8 spiSmIdx   = 0;
+            SpiType *spiHw = (SpiType *)0x40013000UL; /* SPI1 */
 
-        /* Step 1: Initiate async transfer when timer fires */
-        if (spiExchangeFlag && !Spi_MasterBusy()) {
-            spiExchangeFlag = 0;
-            BuildLocalFrame();
-            Spi_MasterTransferAsync(SPI_PERIPHERAL, spiTxBuf, spiRxBuf,
-                                    SPI_FRAME_LEN, MasterSpiDoneCb);
+            switch (spiSmState) {
+            case 0: /* IDLE — wait for exchange trigger */
+                if (spiExchangeFlag) {
+                    spiExchangeFlag = 0;
+                    BuildLocalFrame();
+                    /* Clear OVR */
+                    { volatile uint8 d = (uint8)spiHw->DR; d = (uint8)spiHw->SR; (void)d; }
+                    Spi_CsLow();
+                    spiSmIdx = 0;
+                    /* Write first byte to start transfer */
+                    spiHw->DR = spiTxBuf[0];
+                    spiSmState = 1;
+                }
+                break;
+
+            case 1: /* READ — check if current byte finished */
+                if (READ_BIT(spiHw->SR, 0U)) { /* RXNE */
+                    spiRxBuf[spiSmIdx] = (uint8)spiHw->DR;
+                    spiSmIdx++;
+                    if (spiSmIdx < SPI_FRAME_LEN) {
+                        /* Don't write next byte yet!
+                         * Go to WRITE_NEXT on the next iteration.
+                         * This gives the slave ISR one full main-loop
+                         * cycle to load its next TX byte. */
+                        spiSmState = 3;
+                    } else {
+                        /* All bytes exchanged — wait BSY clear */
+                        spiSmState = 2;
+                    }
+                }
+                break;
+
+            case 2: /* WAIT_BSY — deassert CS when bus is idle */
+                if (!READ_BIT(spiHw->SR, 7U)) { /* BSY=0 */
+                    Spi_CsHigh();
+                    spiRxReady = 1;
+                    spiSmState = 0;
+                }
+                break;
+
+            case 3: /* WRITE_NEXT — load next byte (one iteration later) */
+                spiHw->DR = spiTxBuf[spiSmIdx];
+                spiSmState = 1; /* back to READ for this byte */
+                break;
+            }
         }
 
-        /* Step 2: Process completed transfer */
+        /* Process completed transfer */
         if (spiRxReady) {
             spiRxReady = 0;
 
@@ -532,7 +565,7 @@ int main(void) {
                            spiCommFault ? TRUE : FALSE);
         }
 
-        /* Step 3: Even without RX, check for timeout */
+        /* Timeout check (no exchange received in time) */
         if (!spiRxReady) {
             uint32 elapsed = sysTickMs - spiLastGoodRxTick;
             if (elapsed >= SPI_TIMEOUT_MS) {
@@ -540,20 +573,22 @@ int main(void) {
                     spiLastRxSeq = 0xFF;
                 }
                 spiCommFault = 1;
-                /* Run dispatcher in fault mode */
                 Dispatcher_Run(&localElev, &remoteElev, TRUE);
             }
         }
 #else
-        /* -------- Slave: check for new SPI data -------- */
+        /* -------- Slave: ISR-driven SPI receive -------- */
+        /* SPI1_IRQHandler reads each byte and loads the next TX byte.
+         * When 8 bytes are received, SlaveRxCallback sets spiRxReady.
+         * The master's state-machine pacing gives the ISR enough time. */
+
+        /* Process completed frame */
         if (spiRxReady) {
             spiRxReady = 0;
             if (ParseRemoteFrame()) {
                 spiCommFault = 0;
-                spiLastGoodRxTick = sysTickMs;  /* [FIX #4] reset timeout */
+                spiLastGoodRxTick = sysTickMs;
 
-                /* [FIX #3] If we were in independent mode and comm is back,
-                 * exit independent mode and resume normal operation. */
                 if (localElev.state == ELEV_INDEPENDENT) {
                     Elevator_ExitIndependentMode(&localElev);
                 }

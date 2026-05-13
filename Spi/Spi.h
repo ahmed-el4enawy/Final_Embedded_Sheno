@@ -45,7 +45,11 @@ typedef void (*SpiRxCallback)(uint8 *RxBuf, uint8 Length);
  */
 void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv);
 
-/* Spi_TransmitReceive removed. Use Spi_MasterTransferAsync instead. */
+/**
+ * @brief  Full-duplex blocking (polling) master transfer.
+ *         CS is asserted/deasserted automatically.
+ */
+void Spi_TransmitReceive(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf, uint8 Length);
 
 /**
  * @brief  Pre-load the slave TX buffer so data is ready before the

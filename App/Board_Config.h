@@ -34,7 +34,9 @@
 /*  1. BOARD SELECTION                                                        */
 /* ========================================================================== */
 /* Set to 1 for Master (Board A), 0 for Slave (Board B) */
-#define IS_MASTER_BOARD         0
+#ifndef IS_MASTER_BOARD
+    #define IS_MASTER_BOARD  0
+#endif
 
 /* ========================================================================== */
 /*  2. SPI CONFIGURATION (IPC Link)                                          */
@@ -48,16 +50,20 @@
 #define SPI_MOSI_PIN            7U
 #define SPI_AF                  GPIO_AF5
 
-/* Chip Select (CS) is board-specific in Proteus */
-#if IS_MASTER_BOARD
-    #define SPI_CS_PORT         GPIO_A
-    #define SPI_CS_RCC          RCC_GPIOA
-    #define SPI_CS_PIN          4U
-#else
-    #define SPI_CS_PORT         GPIO_B
-    #define SPI_CS_RCC          RCC_GPIOB
-    #define SPI_CS_PIN          1U
-#endif
+/* Chip Select (CS/NSS)
+ * SPI1_NSS = PA4 (AF5) on STM32F401.
+ * Master: PA4 as GPIO output (manual CS toggle).
+ * Slave:  PA4 as AF5 input  (hardware NSS — SPI peripheral
+ *         auto-selects/deselects based on the pin level).
+ *
+ * [FIX — SPI Root Cause]
+ * Previous config used PB1 for slave CS.  PB1 has NO SPI1 alternate-
+ * function mapping on STM32F401, so the slave SPI peripheral never
+ * saw the chip-select assertion.  Result: zero frames exchanged.
+ */
+#define SPI_CS_PORT             GPIO_A
+#define SPI_CS_RCC              RCC_GPIOA
+#define SPI_CS_PIN              4U
 
 #define SPI_BAUD_DIVIDER        SPI_BAUD_DIV64
 

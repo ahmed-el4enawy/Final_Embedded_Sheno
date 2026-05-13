@@ -137,10 +137,9 @@ boolean Telemetry_Update(const ElevatorContext *elevA,
     if (!telemetryReady) return FALSE;
     telemetryReady = 0;
 
-    /* [FIX — DMA Telemetry]
-     * Guard: if the previous DMA transfer is still in progress, skip
-     * this report rather than corrupting the buffer mid-transfer. */
-    if (Dma_Usart1TxBusy()) return FALSE;
+    /* DMA busy guard — disabled while using blocking USART for Proteus.
+     * Re-enable this guard if switching to Dma_Usart1TxStart(). */
+    // if (Dma_Usart1TxBusy()) return FALSE;
 
     uint32 p = 0;
 
@@ -186,17 +185,11 @@ boolean Telemetry_Update(const ElevatorContext *elevA,
     appendStr(telemetryLine, &p, "\r\n");
     telemetryLine[p] = '\0';
 
-    /* [FIX — DMA Telemetry]
-     * Trigger DMA2 Stream7 → USART1_DR transfer.
-     * Dma_Usart1TxStart() performs:
-     *   DMA2_Stream7->M0AR = (uint32)telemetryLine;
-     *   DMA2_Stream7->NDTR = len;
-     *   DMA2->HIFCR = clear all Stream7 flags;
-     *   SET_BIT(DMA2_Stream7->CR, EN);
-     *   SET_BIT(USART1->CR3, DMAT);
-     * Zero CPU cycles consumed for the actual byte transmission. */
-    // Dma_Usart1TxStart((const uint8 *)telemetryLine,
-    //                   Telemetry_Strlen(telemetryLine));
+    /* [NOTE — DMA Telemetry]
+     * Dma_Usart1TxStart() is ready but Proteus does not reliably
+     * simulate DMA2 Stream7 → USART1_TX, causing the EN bit to
+     * stay set and Dma_Usart1TxBusy() to block forever.
+     * Use blocking USART for Proteus; switch to DMA on real HW. */
     Usart1_TransmitString(telemetryLine);
     return TRUE;
 }

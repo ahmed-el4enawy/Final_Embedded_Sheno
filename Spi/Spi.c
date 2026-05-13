@@ -97,9 +97,16 @@ void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv) {
         Nvic_EnableIrq(irq);
 
     } else {
-        /* Slave mode: hardware NSS or software */
-        spi->CR1 = (1U << SPI_CR1_SSM);  /* SSM=1, SSI=0 → slave           */
-        /* CPOL=0, CPHA=0, 8-bit, MSB first */
+        /* Slave mode: HARDWARE NSS (SSM=0).
+         * PA4 = SPI1_NSS (AF5) — Proteus requires the physical NSS
+         * pin for the slave SPI model to function. */
+        Gpio_Init(SPI_CS_PORT, SPI_CS_PIN, GPIO_AF, GPIO_PUSH_PULL);
+        Gpio_SetAF(SPI_CS_PORT, SPI_CS_PIN, SPI_AF);  /* AF5 */
+        spi->CR1 = 0;  /* SSM=0, MSTR=0 → hardware NSS slave */
+
+        /* Enable NVIC for slave ISR-driven reception */
+        uint8 irq = (SpiId == SPI_1) ? IRQ_SPI1 : IRQ_SPI1;
+        Nvic_EnableIrq(irq);
     }
 
     /* Enable SPI peripheral */
@@ -107,10 +114,41 @@ void Spi_Init(uint8 SpiId, uint8 Mode, uint8 BaudDiv) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Master: full-duplex BLOCKING transfer (boot-time / one-shot only) */
-/*  WARNING: Do NOT use this in the main loop.  Use the async version.*/
+/*  Master: full-duplex BLOCKING (polling) transfer.                   */
+/*  Guaranteed to work in Proteus — no dependency on SPI interrupts.   */
 /* ------------------------------------------------------------------ */
-/* Spi_TransmitReceive removed to enforce strictly non-blocking architecture. */
+void Spi_TransmitReceive(uint8 SpiId, const uint8 *TxBuf, uint8 *RxBuf, uint8 Length) {
+    SpiType *spi = SPI_PERIPH(SpiId);
+
+    /* Clear any old OVR by reading DR then SR */
+    { volatile uint8 d = (uint8)spi->DR; d = (uint8)spi->SR; (void)d; }
+
+    Spi_CsLow();
+
+    for (uint8 i = 0; i < Length; i++) {
+        /* Wait until TX buffer empty */
+        while (!READ_BIT(spi->SR, SPI_SR_TXE)) {}
+        spi->DR = TxBuf[i];
+
+        /* Wait until RX byte ready */
+        while (!READ_BIT(spi->SR, SPI_SR_RXNE)) {}
+        RxBuf[i] = (uint8)spi->DR;
+
+        /* Wait for shift register to finish — critical for Proteus!
+         * Without this, the master starts the next byte before the
+         * slave MCU's RXNE ISR has run, causing OVR on the slave
+         * and corrupting the slave's TX response data. */
+        while (READ_BIT(spi->SR, SPI_SR_BSY)) {}
+
+        /* Extra delay for Proteus dual-MCU simulation timing.
+         * Gives the slave MCU enough simulation cycles to detect
+         * RXNE in its main loop and enter the tight receive loop.
+         * 800 iterations ≈ 200 µs — total 8-byte transfer ≈ 1.6 ms. */
+        { volatile uint32 d; for (d = 0; d < 800; d++) {} }
+    }
+
+    Spi_CsHigh();
+}
 
 /* ------------------------------------------------------------------ */
 /*  [NON-BLOCKING MASTER]                                             */
