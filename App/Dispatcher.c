@@ -294,3 +294,10 @@ void Dispatcher_Run(ElevatorContext *elevA, ElevatorContext *elevB,
 uint8 Dispatcher_GetAssignedA(void) { return assignedToA; }
 uint8 Dispatcher_GetAssignedB(void) { return assignedToB; }
 uint8 Dispatcher_GetPendingHallCalls(void) { return pendingHallCalls; }
+
+/* Return B's assigned calls as a FLOOR bitmask (bit0=F1..bit3=F4).
+ * This is what the slave FSM needs — it doesn't understand the
+ * 6-bit hall-call encoding (U1,D2,U2,D3,U3,D4). */
+uint8 Dispatcher_GetAssignedBFloorMask(void) {
+    return HallMaskToFloorMask(assignedToB);
+}

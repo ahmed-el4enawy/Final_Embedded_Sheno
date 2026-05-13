@@ -58,4 +58,10 @@ uint8 Dispatcher_GetAssignedB(void);
  */
 uint8 Dispatcher_GetPendingHallCalls(void);
 
+/**
+ * @brief  Get B's assigned calls as a FLOOR bitmask (bit0=F1..bit3=F4).
+ *         Used by BuildLocalFrame to send floor-level assignments via SPI.
+ */
+uint8 Dispatcher_GetAssignedBFloorMask(void);
+
 #endif /* DISPATCHER_H */

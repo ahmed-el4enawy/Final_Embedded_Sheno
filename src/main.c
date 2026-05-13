@@ -113,7 +113,7 @@ static void BuildLocalFrame(void) {
     if (localElev.doorOpen)      fd.flags |= FLAG_DOOR_OPEN;
 
 #if IS_MASTER_BOARD
-    fd.hallCalls = Dispatcher_GetAssignedB();   /* hall calls FOR slave */
+    fd.hallCalls = Dispatcher_GetAssignedBFloorMask();  /* floor mask FOR slave FSM */
 #else
     fd.hallCalls = 0;
 #endif
@@ -563,6 +563,20 @@ int main(void) {
             /* Run dispatcher with latest data */
             Dispatcher_Run(&localElev, &remoteElev,
                            spiCommFault ? TRUE : FALSE);
+
+            /* DEBUG: Show what the dispatcher assigned to B */
+            {
+                static uint8 dbgMaster = 0;
+                uint8 bFloor = Dispatcher_GetAssignedBFloorMask();
+                if (bFloor != 0 && dbgMaster < 5) {
+                    dbgMaster++;
+                    static const char hex[] = "0123456789ABCDEF";
+                    char msg[] = "[DBG-M] B-floor=0x00\r\n";
+                    msg[17] = hex[(bFloor >> 4) & 0xF];
+                    msg[18] = hex[bFloor & 0xF];
+                    Usart1_TransmitString(msg);
+                }
+            }
         }
 
         /* Timeout check (no exchange received in time) */
@@ -588,6 +602,19 @@ int main(void) {
             if (ParseRemoteFrame()) {
                 spiCommFault = 0;
                 spiLastGoodRxTick = sysTickMs;
+
+                /* DEBUG: Show received assignment on slave */
+                {
+                    static uint8 dbgSlave = 0;
+                    if (localElev.assignedCalls != 0 && dbgSlave < 5) {
+                        dbgSlave++;
+                        static const char hex[] = "0123456789ABCDEF";
+                        char msg[] = "[DBG-S] assign=0x00\r\n";
+                        msg[16] = hex[(localElev.assignedCalls >> 4) & 0xF];
+                        msg[17] = hex[localElev.assignedCalls & 0xF];
+                        Usart1_TransmitString(msg);
+                    }
+                }
 
                 if (localElev.state == ELEV_INDEPENDENT) {
                     Elevator_ExitIndependentMode(&localElev);

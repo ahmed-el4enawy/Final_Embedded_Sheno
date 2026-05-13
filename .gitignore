@@ -4,6 +4,3 @@ cmake-build-*/
 build*/
 *.zip
 camke/ArmToolchain.cmake
-cmake/ArmToolchain.cmake
-cmake/ArmToolchain.cmake
-cmake/ArmToolchain.cmake
