@@ -4,7 +4,9 @@
  *  Created on: 5/10/2026
  *  Author    : Final Project
  *
- *  500 ms non-blocking UART status reports.
+ *  Non-blocking UART status reports with structured log tags.
+ *
+ *  [REDESIGN] Atomic state snapshots, structured tags, no duplicate logs.
  */
 
 #ifndef TELEMETRY_H
@@ -14,17 +16,18 @@
 #include "Elevator_FSM.h"
 
 /**
- * @brief  Initialise telemetry (starts 500 ms periodic timer).
+ * @brief  Initialise telemetry (starts periodic timer).
  */
 void Telemetry_Init(void);
 
 /**
- * @brief  Called from main loop.  If the 500 ms flag is set,
+ * @brief  Called from main loop.  If the periodic flag is set,
  *         formats and transmits the current status.
  * @param  elevA       Local elevator context
  * @param  elevB       Remote elevator context (may be NULL on slave)
  * @param  commOk      TRUE if SPI link is healthy
  * @param  hallCalls   Pending hallway calls bitmask
+ * @param  spiErrors   Cumulative checksum error count
  * @return TRUE if a telemetry report was actually transmitted.
  */
 boolean Telemetry_Update(const ElevatorContext *elevA,

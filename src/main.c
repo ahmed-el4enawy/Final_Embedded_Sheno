@@ -10,10 +10,17 @@
  *  Board A (Master): Elevator A FSM + Dispatcher + SPI Master + Hallway Buttons
  *  Board B (Slave) : Elevator B FSM + SPI Slave (receives hall calls from master)
  *
- *  [FIX #1] PWM speed ramping uses sysTickMs for non-blocking timestamps.
- *  [FIX #3] Slave enters ELEV_INDEPENDENT on SPI comm fault.
- *  [FIX #4] SysTick 1 ms counter replaces telemetry-gated timeout on slave.
- *  [FIX #5] Button debounce also uses sysTickMs (see Button_Handlers.c).
+ *  [REDESIGN] Main loop execution order fix:
+ *  1. Sample inputs (cabin buttons)
+ *  2. Run FSM (consumes events, produces state)
+ *  3. Run Dispatcher (assigns hall calls)
+ *  4. Build SPI frame AFTER FSM — sends fresh data
+ *  5. SPI exchange
+ *  6. Parse response
+ *  7. Telemetry
+ *
+ *  This eliminates the race between BuildLocalFrame() snapshotting
+ *  stale state and Elevator_Run() updating it.
  */
 
 #include "Std_Types.h"
@@ -44,11 +51,7 @@
 #endif
 
 /* ================================================================== */
-/*  [FIX #1/#4/#5] Global 1 ms SysTick counter                        */
-/*  Used by:                                                           */
-/*   - PWM ramp (Elevator_FSM.c, [FIX #1])                           */
-/*   - Slave SPI timeout detection (this file, [FIX #4])              */
-/*   - Button debounce (Button_Handlers.c, [FIX #5])                  */
+/*  Global 1 ms SysTick counter                                        */
 /* ================================================================== */
 volatile uint32 sysTickMs = 0;
 
@@ -73,17 +76,15 @@ static volatile uint8 spiCommFault    = 0;   /* set on timeout        */
 static volatile uint8 spiSequence     = 0;
 static volatile uint8 spiLastRxSeq    = 0xFF;
 
-/* [FIX #4] SPI timeout tracked via sysTickMs — NOT telemetry period */
+/* SPI timeout tracked via sysTickMs */
 static volatile uint32 spiLastGoodRxTick = 0;
 
-/* [NEW] Checksum failure counter for telemetry */
+/* Checksum failure counter for telemetry */
 volatile uint32 checksumErrorCount = 0;
 
-/* Door timer callback (shared between master/slave) */
-/* Forward declaration — defined after localElev */
+/* Door timer callback */
 static void DoorTimerCb(void);
 
-/* Wrapper that the FSM calls when it needs a door timer */
 static void StartDoorTimer(void) {
     Timer_DelayMsAsync(DOOR_TIMER, DOOR_OPEN_TIME_MS, DoorTimerCb);
 }
@@ -98,6 +99,7 @@ static void DoorTimerCb(void) {
 
 /**
  * @brief Build a TX frame from the local elevator state.
+ *        [REDESIGN] Called AFTER Elevator_Run() so state is fresh.
  */
 static void BuildLocalFrame(void) {
     SpiFrameData fd;
@@ -105,6 +107,7 @@ static void BuildLocalFrame(void) {
     fd.state         = Elevator_GetPacketState(&localElev);
     fd.currentFloor  = localElev.currentFloor;
     fd.direction     = localElev.direction;
+    fd.targetFloor   = localElev.targetFloor;
     fd.cabinRequests = localElev.cabinRequests;
     fd.assignedCalls = localElev.assignedCalls;
     fd.flags         = 0;
@@ -113,9 +116,7 @@ static void BuildLocalFrame(void) {
     if (localElev.doorOpen)      fd.flags |= FLAG_DOOR_OPEN;
 
 #if IS_MASTER_BOARD
-    fd.hallCalls = Dispatcher_GetAssignedBFloorMask();  /* floor mask FOR slave FSM */
-#else
-    fd.hallCalls = 0;
+    fd.assignedCalls = Dispatcher_GetAssignedBFloorMask();  /* floor mask FOR slave FSM */
 #endif
 
     fd.sequence = spiSequence++;
@@ -135,14 +136,25 @@ static boolean ParseRemoteFrame(void) {
         return FALSE;
     }
 
-    /* Freshness check */
+    /* Freshness check — reject exact duplicates */
     if (fd.sequence == spiLastRxSeq) {
-        return FALSE;   /* duplicate */
+        return FALSE;
     }
+
+    /* [REDESIGN] Staleness check — reject if sequence wrapped too far back */
+    {
+        uint8 seqDelta = (uint8)(fd.sequence - spiLastRxSeq);
+        if (seqDelta > 200) {
+            /* Sequence went backwards by more than 55 — stale frame */
+            return FALSE;
+        }
+    }
+
     spiLastRxSeq = fd.sequence;
 
     uint32 pm = Enter_Critical();
     remoteElev.currentFloor  = fd.currentFloor;
+    remoteElev.targetFloor   = fd.targetFloor;
     remoteElev.direction     = fd.direction;
     remoteElev.cabinRequests = fd.cabinRequests;
     remoteElev.assignedCalls = fd.assignedCalls;
@@ -162,7 +174,7 @@ static boolean ParseRemoteFrame(void) {
 
 #if !IS_MASTER_BOARD
     /* Slave: apply hall calls from master as assigned calls */
-    localElev.assignedCalls = fd.hallCalls;
+    localElev.assignedCalls = fd.assignedCalls;
 #endif
 
     Exit_Critical(pm);
@@ -180,7 +192,6 @@ static boolean ParseRemoteFrame(void) {
  */
 static void SpiExchangeTimerCb(void) {
     spiExchangeFlag = 1;
-    /* Re-arm */
     Timer_DelayMsAsync(SPI_EXCHANGE_TIMER, SPI_EXCHANGE_PERIOD_MS,
                        SpiExchangeTimerCb);
 }
@@ -194,49 +205,21 @@ static void SpiExchangeTimerCb(void) {
 static void SlaveRxCallback(uint8 *buf, uint8 len) {
     (void)len;
     spiRxReady = 1;
-    /* [FIX #4] Record the SysTick ms of last successful SPI reception */
     spiLastGoodRxTick = sysTickMs;
 }
 #endif
 
 /* ================================================================== */
-/*  [FIX #1/#4/#5] SysTick initialisation and ISR                      */
-/*                                                                      */
-/*  Configures SysTick for a 1 ms interrupt.  This provides a global   */
-/*  free-running millisecond counter used by:                           */
-/*   - PWM speed ramping (non-blocking duty step timing)               */
-/*   - Slave SPI timeout detection (accurate to 1 ms)                  */
-/*   - EXTI button debounce (50 ms timestamp checks)                   */
-/*                                                                      */
-/*  SysTick registers (Cortex-M4 — always available, no RCC needed):  */
-/*   SYST_CSR   @ 0xE000E010  (Control and Status)                     */
-/*   SYST_RVR   @ 0xE000E014  (Reload Value)                           */
-/*   SYST_CVR   @ 0xE000E018  (Current Value)                          */
+/*  SysTick initialisation and ISR                                     */
 /* ================================================================== */
 
 #define SYSTICK_CSR   (*(volatile uint32 *)0xE000E010UL)
 #define SYSTICK_RVR   (*(volatile uint32 *)0xE000E014UL)
 #define SYSTICK_CVR   (*(volatile uint32 *)0xE000E018UL)
 
-/* Bit definitions for SYST_CSR */
 #define SYSTICK_CSR_ENABLE      (1UL << 0)
 #define SYSTICK_CSR_TICKINT     (1UL << 1)
-#define SYSTICK_CSR_CLKSOURCE   (1UL << 2)   /* 1 = processor clock */
-
-/* ------------------------------------------------------------------ */
-/*  [FIX — SysTick Core Clock Hardcoding]                              */
-/*                                                                      */
-/*  Previous code:  #define SYSTICK_CLOCK_HZ  16000000UL               */
-/*  This is violently wrong if Rcc_Init() configures the PLL.          */
-/*  On STM32F401 the PLL can push SYSCLK to 84 MHz; a 16 MHz math     */
-/*  base would fire SysTick every 0.19 ms instead of 1.0 ms.           */
-/*                                                                      */
-/*  Solution: Read the RCC_CFGR.SWS[1:0] bits to determine the active  */
-/*  system clock source, then compute the true frequency:               */
-/*   SWS=00  → HSI  = 16 MHz                                          */
-/*   SWS=01  → HSE  = HSE_VALUE (typically 8 or 25 MHz)               */
-/*   SWS=10  → PLL  → decode PLLCFGR (M, N, P) to get VCO/P          */
-/* ------------------------------------------------------------------ */
+#define SYSTICK_CSR_CLKSOURCE   (1UL << 2)
 
 /* RCC register addresses (STM32F4xx) */
 #define RCC_BASE_ADDR       0x40023800UL
@@ -244,72 +227,51 @@ static void SlaveRxCallback(uint8 *buf, uint8 len) {
 #define RCC_PLLCFGR_REG     (*(volatile uint32 *)(RCC_BASE_ADDR + 0x04UL))
 #define RCC_CFGR_REG        (*(volatile uint32 *)(RCC_BASE_ADDR + 0x08UL))
 
-/* Default oscillator frequencies */
 #define HSI_VALUE_HZ        16000000UL
-#define HSE_VALUE_HZ         8000000UL   /* adjust to match actual crystal */
+#define HSE_VALUE_HZ         8000000UL
 
 /**
- * @brief  Dynamically compute the current SYSCLK frequency from
- *         the RCC_CFGR SWS bits and (if PLL) the PLLCFGR register.
- * @return System clock frequency in Hz.
+ * @brief  Dynamically compute the current SYSCLK frequency.
  */
 static uint32 Rcc_GetSystemClock(void) {
     uint32 cfgr = RCC_CFGR_REG;
-    uint8  sws  = (uint8)((cfgr >> 2) & 0x03U);   /* SWS[1:0] = bits [3:2] */
+    uint8  sws  = (uint8)((cfgr >> 2) & 0x03U);
 
     switch (sws) {
-    case 0U:   /* HSI oscillator */
+    case 0U:
         return HSI_VALUE_HZ;
-
-    case 1U:   /* HSE oscillator */
+    case 1U:
         return HSE_VALUE_HZ;
-
-    case 2U: { /* PLL */
-        /* Decode PLLCFGR:
-         *   PLLM[5:0]  = bits  [5:0]   → divider  2..63
-         *   PLLN[8:0]  = bits [14:6]   → multiplier 50..432
-         *   PLLP[1:0]  = bits [17:16]  → 0→2, 1→4, 2→6, 3→8
-         *   PLLSRC     = bit  [22]     → 0=HSI, 1=HSE
-         */
+    case 2U: {
         uint32 pllcfgr = RCC_PLLCFGR_REG;
         uint32 pllm = pllcfgr & 0x3FUL;
         uint32 plln = (pllcfgr >> 6)  & 0x1FFUL;
-        uint32 pllp = (((pllcfgr >> 16) & 0x03UL) + 1UL) * 2UL;  /* 2,4,6,8 */
+        uint32 pllp = (((pllcfgr >> 16) & 0x03UL) + 1UL) * 2UL;
         uint32 pllsrc = (pllcfgr >> 22) & 0x01UL;
-
         uint32 inputClk = pllsrc ? HSE_VALUE_HZ : HSI_VALUE_HZ;
-
-        /* Guard against divide-by-zero (should never happen in practice) */
         if (pllm == 0) pllm = 1;
-
-        /* SYSCLK = (inputClk / PLLM) * PLLN / PLLP */
         return (inputClk / pllm) * plln / pllp;
     }
-
-    default:   /* Should not occur */
+    default:
         return HSI_VALUE_HZ;
     }
 }
 
 static void SysTick_Init(void) {
     uint32 sysClkHz = Rcc_GetSystemClock();
-    SYSTICK_RVR = (sysClkHz / 1000UL) - 1UL;   /* 1 ms reload */
-    SYSTICK_CVR = 0;                             /* clear current value */
+    SYSTICK_RVR = (sysClkHz / 1000UL) - 1UL;
+    SYSTICK_CVR = 0;
     SYSTICK_CSR = SYSTICK_CSR_CLKSOURCE
                 | SYSTICK_CSR_TICKINT
                 | SYSTICK_CSR_ENABLE;
 }
 
-/**
- * @brief  SysTick ISR — increments the global millisecond counter.
- *         The symbol SysTick_Handler is the standard Cortex-M vector name.
- */
 void SysTick_Handler(void) {
     sysTickMs++;
 }
 
 /* ================================================================== */
-/*  [NEW] Independent Watchdog (IWDG)                                  */
+/*  Independent Watchdog (IWDG)                                        */
 /* ================================================================== */
 #define IWDG_BASE            0x40003000UL
 #define IWDG_KR              (*(volatile uint32 *)(IWDG_BASE + 0x00))
@@ -318,11 +280,11 @@ void SysTick_Handler(void) {
 #define IWDG_SR              (*(volatile uint32 *)(IWDG_BASE + 0x0C))
 
 static void Iwdg_Init(void) {
-    IWDG_KR  = 0x5555;      /* Enable register access */
-    IWDG_PR  = 4;           /* Prescaler = 64 (32kHz / 64 = 500Hz) */
-    IWDG_RLR = 2000;        /* Reload = 2000 (2000 / 500Hz = 4 seconds) */
-    IWDG_KR  = 0xAAAA;      /* Refresh / Start */
-    IWDG_KR  = 0xCCCC;      /* Start watchdog */
+    IWDG_KR  = 0x5555;
+    IWDG_PR  = 4;
+    IWDG_RLR = 2000;
+    IWDG_KR  = 0xAAAA;
+    IWDG_KR  = 0xCCCC;
 }
 
 static void Iwdg_Refresh(void) {
@@ -330,7 +292,7 @@ static void Iwdg_Refresh(void) {
 }
 
 /* ================================================================== */
-/*  System Control Block (SCB) - for System Handler Priorities        */
+/*  System Control Block                                              */
 /* ================================================================== */
 #define SCB_SHPR3            (*(volatile uint32 *)0xE000ED20UL)
 
@@ -365,20 +327,19 @@ static void System_Init(void) {
     Rcc_Enable(RCC_SYSCFG);
     Rcc_Enable(RCC_TIM2);
     Rcc_Enable(MOTOR_PWM_RCC);
-    Rcc_Enable(TELEMETRY_TIMER == TIMER4 ? RCC_TIM4 : RCC_TIM2); /* mapping simplified */
+    Rcc_Enable(TELEMETRY_TIMER == TIMER4 ? RCC_TIM4 : RCC_TIM2);
     Rcc_Enable(DOOR_TIMER == TIMER5 ? RCC_TIM5 : RCC_TIM2);
     Rcc_Enable(UART_RCC_ID);
     Rcc_Enable(SPI_RCC_ID);
-    //Rcc_Enable(RCC_DMA2);
     *((volatile uint32 *)0x40023830UL) |= (1UL << 22);
 
-    /* --- [FIX #1/#4/#5] SysTick — 1 ms global tick --- */
+    /* --- SysTick — 1 ms global tick --- */
     SysTick_Init();
 
     /* --- USART1 --- */
     Usart1_Init();
 
-    /* --- PWM motor LED (e.g. TIM3 CH1 on PC6, AF2) --- */
+    /* --- PWM motor LED (TIM3 CH1 on PC6, AF2) --- */
     Gpio_Init(MOTOR_PWM_PORT, MOTOR_PWM_PIN, GPIO_AF, GPIO_PUSH_PULL);
     Gpio_SetAF(MOTOR_PWM_PORT, MOTOR_PWM_PIN, MOTOR_PWM_AF);
     Pwm_Init(MOTOR_PWM_TIMER, MOTOR_PWM_CHANNEL, MOTOR_PWM_PSC, MOTOR_PWM_ARR);
@@ -403,23 +364,21 @@ static void System_Init(void) {
     Elevator_Init(&localElev);
     Elevator_Init(&remoteElev);
     localElev.startDoorTimer = StartDoorTimer;
-    /* remoteElev doesn't need a door timer — it's just a mirror */
 
     /* --- Buttons & sensors (EXTI) --- */
     Buttons_Init(&localElev);
 
 #if IS_MASTER_BOARD
-    /* --- Dispatcher --- */
     Dispatcher_Init();
 #endif
 
-    /* --- DMA for USART1 TX (bonus) --- */
+    /* --- DMA for USART1 TX --- */
     Dma_Usart1TxInit();
 
-    /* --- Telemetry (500 ms periodic) --- */
+    /* --- Telemetry --- */
     Telemetry_Init();
 
-    /* [FIX #4] Initialise last-good-rx timestamp to now */
+    /* Initialise last-good-rx timestamp */
     spiLastGoodRxTick = sysTickMs;
 
 #if IS_MASTER_BOARD
@@ -433,26 +392,11 @@ static void System_Init(void) {
     Spi_SlaveStartAsync(SPI_PERIPHERAL, SlaveRxCallback, spiRxBuf, SPI_FRAME_LEN);
 #endif
 
-    /* [NEW] Independent Watchdog */
+    /* Independent Watchdog */
     Iwdg_Init();
 
     Usart1_TransmitString("\r\n=== Elevator System Started ===\r\n");
 }
-
-/* ================================================================== */
-/*  [NON-BLOCKING MASTER] SPI completion callback                      */
-/*                                                                      */
-/*  Called from SPI1_IRQHandler when all 8 bytes have been exchanged.  */
-/*  Sets spiRxReady so the main loop can parse the received frame on   */
-/*  its next iteration — zero CPU time spent polling TXE/RXNE.         */
-/* ================================================================== */
-#if IS_MASTER_BOARD
-static void MasterSpiDoneCb(uint8 *buf, uint8 len) {
-    (void)buf;
-    (void)len;
-    spiRxReady = 1;
-}
-#endif
 
 /* ================================================================== */
 /*  MAIN                                                               */
@@ -462,13 +406,15 @@ int main(void) {
 
     System_Init();
 
-    /* [NEW] State for Cabin Button Periodic Scan */
+    /* State for Cabin Button Periodic Scan */
     static uint32 lastCabinScanTick = 0;
 
     while (1) {
 
-        /* -------- Cabin Button Periodic Scan (~10ms) -------- */
-        /* [FIX #6] Replaces EXTI to resolve PA0/PC0 hardware conflict. */
+        /* ======================================================== */
+        /*  STEP 1: SAMPLE INPUTS                                    */
+        /*  Cabin buttons polled every ~10ms to avoid EXTI conflict. */
+        /* ======================================================== */
         {
             uint32 elapsed = sysTickMs - lastCabinScanTick;
             if (elapsed >= 10) {
@@ -477,21 +423,30 @@ int main(void) {
             }
         }
 
-        /* -------- Run local elevator FSM -------- */
-        /* NOTE: Emergency check is handled inside Elevator_Run() which
-         * forces ELEV_EMERGENCY_STOP and instant-stops the motor via
-         * the ramp context.  No duplicate handling needed here. */
+        /* ======================================================== */
+        /*  STEP 2: RUN LOCAL ELEVATOR FSM                           */
+        /*  Consumes floor sensor events, produces state transitions.*/
+        /*  Must run BEFORE BuildLocalFrame so frame carries fresh   */
+        /*  state data.                                              */
+        /* ======================================================== */
         Elevator_Run(&localElev);
 
 #if IS_MASTER_BOARD
-        /* ============================================================ */
-        /*  [NON-BLOCKING MASTER] SPI state machine                      */
-        /*  Sends ONE byte per main-loop iteration — never blocks.       */
-        /*  Natural inter-byte gap gives the slave ISR time to respond.  */
-        /* ============================================================ */
+        /* ======================================================== */
+        /*  STEP 3: RUN DISPATCHER (Master only)                     */
+        /*  Assigns pending hall calls to elevators A/B.             */
+        /*  Runs AFTER FSM so elevator states are current.           */
+        /* ======================================================== */
+        Dispatcher_Run(&localElev, &remoteElev,
+                       spiCommFault ? TRUE : FALSE);
+
+        /* ======================================================== */
+        /*  STEP 4: SPI EXCHANGE                                     */
+        /*  BuildLocalFrame runs AFTER FSM+Dispatcher = fresh data. */
+        /*  Non-blocking state machine sends one byte per iteration. */
+        /* ======================================================== */
         {
-            /* State machine locals (persist across iterations) */
-            static uint8 spiSmState = 0;  /* 0=idle, 1=sending, 2=wait_bsy */
+            static uint8 spiSmState = 0;  /* 0=idle, 1=sending, 2=wait_bsy, 3=write_next */
             static uint8 spiSmIdx   = 0;
             SpiType *spiHw = (SpiType *)0x40013000UL; /* SPI1 */
 
@@ -499,12 +454,12 @@ int main(void) {
             case 0: /* IDLE — wait for exchange trigger */
                 if (spiExchangeFlag) {
                     spiExchangeFlag = 0;
+                    /* [REDESIGN] BuildLocalFrame AFTER FSM ran */
                     BuildLocalFrame();
                     /* Clear OVR */
                     { volatile uint8 d = (uint8)spiHw->DR; d = (uint8)spiHw->SR; (void)d; }
                     Spi_CsLow();
                     spiSmIdx = 0;
-                    /* Write first byte to start transfer */
                     spiHw->DR = spiTxBuf[0];
                     spiSmState = 1;
                 }
@@ -515,13 +470,8 @@ int main(void) {
                     spiRxBuf[spiSmIdx] = (uint8)spiHw->DR;
                     spiSmIdx++;
                     if (spiSmIdx < SPI_FRAME_LEN) {
-                        /* Don't write next byte yet!
-                         * Go to WRITE_NEXT on the next iteration.
-                         * This gives the slave ISR one full main-loop
-                         * cycle to load its next TX byte. */
                         spiSmState = 3;
                     } else {
-                        /* All bytes exchanged — wait BSY clear */
                         spiSmState = 2;
                     }
                 }
@@ -537,16 +487,17 @@ int main(void) {
 
             case 3: /* WRITE_NEXT — load next byte (one iteration later) */
                 spiHw->DR = spiTxBuf[spiSmIdx];
-                spiSmState = 1; /* back to READ for this byte */
+                spiSmState = 1;
                 break;
             }
         }
 
-        /* Process completed transfer */
+        /* ======================================================== */
+        /*  STEP 5: PROCESS SPI RESPONSE                             */
+        /* ======================================================== */
         if (spiRxReady) {
             spiRxReady = 0;
 
-            /* Parse remote frame */
             if (ParseRemoteFrame()) {
                 spiCommFault = 0;
                 spiLastGoodRxTick = sysTickMs;
@@ -559,24 +510,6 @@ int main(void) {
                     spiCommFault = 1;
                 }
             }
-
-            /* Run dispatcher with latest data */
-            Dispatcher_Run(&localElev, &remoteElev,
-                           spiCommFault ? TRUE : FALSE);
-
-            /* DEBUG: Show what the dispatcher assigned to B */
-            {
-                static uint8 dbgMaster = 0;
-                uint8 bFloor = Dispatcher_GetAssignedBFloorMask();
-                if (bFloor != 0 && dbgMaster < 5) {
-                    dbgMaster++;
-                    static const char hex[] = "0123456789ABCDEF";
-                    char msg[] = "[DBG-M] B-floor=0x00\r\n";
-                    msg[17] = hex[(bFloor >> 4) & 0xF];
-                    msg[18] = hex[bFloor & 0xF];
-                    Usart1_TransmitString(msg);
-                }
-            }
         }
 
         /* Timeout check (no exchange received in time) */
@@ -587,14 +520,14 @@ int main(void) {
                     spiLastRxSeq = 0xFF;
                 }
                 spiCommFault = 1;
+                /* Re-run dispatcher in fault mode */
                 Dispatcher_Run(&localElev, &remoteElev, TRUE);
             }
         }
 #else
-        /* -------- Slave: ISR-driven SPI receive -------- */
-        /* SPI1_IRQHandler reads each byte and loads the next TX byte.
-         * When 8 bytes are received, SlaveRxCallback sets spiRxReady.
-         * The master's state-machine pacing gives the ISR enough time. */
+        /* ======================================================== */
+        /*  SLAVE: ISR-driven SPI receive                            */
+        /* ======================================================== */
 
         /* Process completed frame */
         if (spiRxReady) {
@@ -603,62 +536,26 @@ int main(void) {
                 spiCommFault = 0;
                 spiLastGoodRxTick = sysTickMs;
 
-                /* DEBUG: Show received assignment on slave */
-                {
-                    static uint8 dbgSlave = 0;
-                    if (localElev.assignedCalls != 0 && dbgSlave < 5) {
-                        dbgSlave++;
-                        static const char hex[] = "0123456789ABCDEF";
-                        char msg[] = "[DBG-S] assign=0x00\r\n";
-                        msg[16] = hex[(localElev.assignedCalls >> 4) & 0xF];
-                        msg[17] = hex[localElev.assignedCalls & 0xF];
-                        Usart1_TransmitString(msg);
-                    }
-                }
-
                 if (localElev.state == ELEV_INDEPENDENT) {
                     Elevator_ExitIndependentMode(&localElev);
                 }
             }
 
-            /* Refresh TX buffer for next exchange */
+            /* [REDESIGN] Build frame AFTER FSM ran — fresh state */
             BuildLocalFrame();
             Spi_SlavePreload(SPI_PERIPHERAL, spiTxBuf, SPI_FRAME_LEN);
         }
 
-        /* [FIX #4] Slave comm-fault: accurate 1 ms SysTick-based timeout.
-         * Checks elapsed time since last valid SPI frame EVERY main-loop
-         * iteration — no longer gated by the 500 ms telemetry period. */
+        /* Slave comm-fault: SysTick-based timeout */
         {
             uint32 elapsed = sysTickMs - spiLastGoodRxTick;
             if (elapsed >= SPI_TIMEOUT_MS) {
                 if (!spiCommFault) {
                     spiCommFault = 1;
-
-                    /* [FIX — Sequence Wrap-Around]
-                     * Invalidate spiLastRxSeq so the first recovery frame
-                     * post-fault is never dropped as a duplicate.  If the
-                     * fault persists for exactly 256×50ms = 12.8s, the
-                     * remote sequence byte wraps back to the stale value
-                     * in spiLastRxSeq.  Setting 0xFF breaks the collision
-                     * because ParseRemoteFrame() will accept any sequence
-                     * that is != 0xFF. */
                     spiLastRxSeq = 0xFF;
-
-                    /* [FIX #3] Force slave into independent/emergency mode.
-                     * Clears assigned calls, stops motor, ignores external
-                     * commands until SPI link recovers.
-                     *
-                     * EnterIndependentMode is called ONCE on the rising edge
-                     * of the fault.  The FSM may internally transition
-                     * INDEPENDENT→IDLE to service cabin requests while the
-                     * fault persists — that is acceptable (degraded cabin-
-                     * only operation).  We do NOT re-enter independent mode
-                     * on subsequent iterations to avoid ping-ponging. */
                     Elevator_EnterIndependentMode(&localElev);
                 }
-                /* While fault persists, ensure assignedCalls stay cleared
-                 * so the FSM only services cabin requests. */
+                /* While fault persists, keep assigned calls cleared */
                 localElev.assignedCalls = 0;
             } else {
                 spiCommFault = 0;
@@ -666,7 +563,9 @@ int main(void) {
         }
 #endif
 
-        /* -------- Telemetry (500 ms UART report) -------- */
+        /* ======================================================== */
+        /*  STEP 6: TELEMETRY                                        */
+        /* ======================================================== */
 #if IS_MASTER_BOARD
         Telemetry_Update(&localElev, &remoteElev,
                          spiCommFault ? FALSE : TRUE,
@@ -678,7 +577,9 @@ int main(void) {
                          checksumErrorCount);
 #endif
 
-        /* -------- Refresh Watchdog -------- */
+        /* ======================================================== */
+        /*  STEP 7: WATCHDOG REFRESH                                 */
+        /* ======================================================== */
         Iwdg_Refresh();
     }
 

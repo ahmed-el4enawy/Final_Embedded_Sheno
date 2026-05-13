@@ -116,8 +116,11 @@ static void EmergencyBtn(void) {
 
 /* ------------------------------------------------------------------ */
 /*  Floor sensor callbacks (both boards)                              */
-/*  Note: Floor sensors are NOT debounced — they are hardware         */
-/*  position sensors, not user-operated buttons.                      */
+/*  [REDESIGN] These now set an event flag via FloorSensorTriggered   */
+/*  (ISR-safe: only writes sensorFloor + floorSensorEvent).           */
+/*  The FSM consumes the event with adjacency + direction validation. */
+/*  Floor sensors are NOT debounced — they are hardware position      */
+/*  sensors, not user-operated buttons.                               */
 /* ------------------------------------------------------------------ */
 static void FloorSensor_F1(void) { Elevator_FloorSensorTriggered(localCtx, 1); }
 static void FloorSensor_F2(void) { Elevator_FloorSensorTriggered(localCtx, 2); }

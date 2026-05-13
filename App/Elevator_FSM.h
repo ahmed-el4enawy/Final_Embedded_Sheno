@@ -5,6 +5,10 @@
  *  Author    : Final Project
  *
  *  Finite State Machine for a single elevator serving 4 floors.
+ *
+ *  [REDESIGN] Added DISPATCHING and DECELERATING states.
+ *  Added targetFloor commitment and event-based floor sensor.
+ *  FSM is now the SOLE owner of state transitions — ISRs only set flags.
  */
 
 #ifndef ELEVATOR_FSM_H
@@ -18,20 +22,21 @@
 /* ============================================================ */
 typedef enum {
     ELEV_IDLE,
+    ELEV_DISPATCHING,       /* [REDESIGN] Picks target, commits direction */
     ELEV_MOVING_UP,
     ELEV_MOVING_DOWN,
-    ELEV_ARRIVING,          /* Decelerating at target floor */
+    ELEV_DECELERATING,      /* [REDESIGN] Ramp to SLOW, wait before door */
     ELEV_DOORS_OPEN,
     ELEV_DOOR_CLOSING,
     ELEV_EMERGENCY_STOP,
-    ELEV_INDEPENDENT        /* [FIX #3] Slave independent mode on SPI comm fault */
+    ELEV_INDEPENDENT        /* Slave independent mode on SPI comm fault */
 } ElevatorState;
 
 /* ============================================================ */
-/*  PWM ramp context  [FIX #1]                                   */
+/*  PWM ramp context                                             */
 /*  Non-blocking speed ramping via SysTick timestamp checks.     */
 /* ============================================================ */
-/* Timing constants moved to Board_Config.h */
+/* Timing constants in Board_Config.h */
 
 typedef struct {
     volatile uint8  currentDuty;    /* actual duty cycle right now    */
@@ -48,14 +53,17 @@ typedef struct {
     volatile ElevatorState  state;
     volatile ElevatorState  prevState;       /* For transition telemetry        */
     volatile uint8          currentFloor;    /* 1 – 4                           */
+    volatile uint8          targetFloor;     /* [REDESIGN] 0=none, 1-4=committed target */
     volatile uint8          direction;       /* DIR_UP, DIR_DOWN, DIR_NONE      */
     volatile uint8          cabinRequests;   /* Bitmask: bit0=F1 .. bit3=F4     */
     volatile uint8          assignedCalls;   /* Hall calls assigned by master   */
     volatile uint8          emergencyStop;   /* 1 = emergency active            */
     volatile uint8          doorOpen;        /* 1 = doors are open              */
     volatile uint8          doorTimerActive; /* 1 = waiting for door close      */
+    volatile uint8          floorSensorEvent;/* [REDESIGN] ISR sets 1, FSM clears */
+    volatile uint8          sensorFloor;     /* [REDESIGN] floor from last sensor ISR */
     DoorTimerStartFunc      startDoorTimer;  /* function to start door timer    */
-    PwmRampContext          ramp;            /* [FIX #1] PWM speed ramp state   */
+    PwmRampContext          ramp;            /* PWM speed ramp state            */
 } ElevatorContext;
 
 /* ============================================================ */
@@ -69,6 +77,7 @@ void Elevator_Init(ElevatorContext *ctx);
 
 /**
  * @brief  Run one iteration of the FSM.  Call from the main loop.
+ *         Exactly ONE state transition per call — no fall-through.
  */
 void Elevator_Run(ElevatorContext *ctx);
 
@@ -85,7 +94,9 @@ void Elevator_AddCabinRequest(ElevatorContext *ctx, uint8 floor);
 void Elevator_AddAssignedCalls(ElevatorContext *ctx, uint8 mask);
 
 /**
- * @brief  Notify the FSM that a floor sensor triggered.
+ * @brief  Notify the FSM that a floor sensor triggered (event-based).
+ *         ISR-safe: only sets floorSensorEvent flag + sensorFloor.
+ *         FSM consumes the event in its main-loop iteration.
  * @param  floor  The floor the elevator has reached (1-4)
  */
 void Elevator_FloorSensorTriggered(ElevatorContext *ctx, uint8 floor);
@@ -102,6 +113,7 @@ void Elevator_EmergencyClear(ElevatorContext *ctx);
 
 /**
  * @brief  Callback for door-close timer expiry.
+ *         ISR-safe: only clears doorTimerActive flag.
  */
 void Elevator_DoorTimerExpired(ElevatorContext *ctx);
 
@@ -122,7 +134,7 @@ uint8 Elevator_GetPacketState(const ElevatorContext *ctx);
 uint8 Elevator_GetPendingFloors(const ElevatorContext *ctx);
 
 /**
- * @brief  [FIX #3] Enter independent/emergency mode on SPI comm fault.
+ * @brief  Enter independent/emergency mode on SPI comm fault.
  *         Clears external (assigned) calls, stops motor, transitions
  *         to ELEV_INDEPENDENT.  Elevator will only service cabin
  *         requests (if any) in a degraded mode.
@@ -130,7 +142,7 @@ uint8 Elevator_GetPendingFloors(const ElevatorContext *ctx);
 void Elevator_EnterIndependentMode(ElevatorContext *ctx);
 
 /**
- * @brief  [FIX #3] Exit independent mode (e.g. when SPI link recovers).
+ * @brief  Exit independent mode (e.g. when SPI link recovers).
  */
 void Elevator_ExitIndependentMode(ElevatorContext *ctx);
 

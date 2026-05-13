@@ -6,6 +6,8 @@
  *
  *  Fixed-length 8-byte SPI IPC frame definition,
  *  packing / unpacking, and checksum helpers.
+ *
+ *  [REDESIGN] Added targetFloor field and ACK flag for reliable comms.
  */
 
 #ifndef SPI_PROTOCOL_H
@@ -42,6 +44,7 @@
 #define FLAG_EMERGENCY      (1U << 0)
 #define FLAG_COMM_FAULT     (1U << 1)
 #define FLAG_DOOR_OPEN      (1U << 2)
+#define FLAG_ACK            (1U << 3)   /* [REDESIGN] ACK for last received frame */
 
 /* ============================================================ */
 /*  Hallway call bitmask encoding (6 calls → 6 bits)            */
@@ -62,10 +65,10 @@
  * Frame layout (8 bytes):
  *  [0] Header           0xA5
  *  [1] State|Floor       upper nibble = FSM state, lower = current floor (1-4)
- *  [2] Direction|Cabin   upper nibble = direction, lower = cabin request mask
- *  [3] Assigned calls    bitmask of hall calls assigned to THIS elevator
- *  [4] Hall calls        bitmask of pending hall calls (master→slave: new assignments)
- *  [5] Flags             emergency, comm-fault, door-open
+ *  [2] Direction|Target  upper nibble = direction, lower = targetFloor (0-4) [REDESIGN]
+ *  [3] CabinRequests     bitmask of cabin requests (bit0=F1..bit3=F4)
+ *  [4] AssignedCalls     floor bitmask (master→slave: assignments)
+ *  [5] Flags             emergency, comm-fault, door-open, ACK
  *  [6] Sequence          rolling counter for freshness
  *  [7] Checksum          XOR of bytes 0..6
  */
@@ -73,9 +76,9 @@ typedef struct {
     uint8 state;           /* PKT_STATE_* */
     uint8 currentFloor;    /* 1 – 4       */
     uint8 direction;       /* DIR_*       */
+    uint8 targetFloor;     /* [REDESIGN] 0=none, 1-4 = committed target */
     uint8 cabinRequests;   /* bitmask     */
     uint8 assignedCalls;   /* bitmask     */
-    uint8 hallCalls;       /* bitmask     */
     uint8 flags;           /* FLAG_*      */
     uint8 sequence;
 } SpiFrameData;

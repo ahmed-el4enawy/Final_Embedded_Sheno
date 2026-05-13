@@ -7,6 +7,8 @@
  *  Master-only Task Allocation Algorithm.
  *  Implements directional-optimization scoring to decide which
  *  elevator (A or B) should handle each hallway call.
+ *
+ *  [REDESIGN] Atomic score+assign, idempotent re-runs, no duplicate execution.
  */
 
 #ifndef DISPATCHER_H

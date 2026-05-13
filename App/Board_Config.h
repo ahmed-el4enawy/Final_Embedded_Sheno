@@ -149,10 +149,10 @@
 #define SPI_TIMEOUT_MS          200U
 
 #define TELEMETRY_TIMER         TIMER4
-#define TELEMETRY_PERIOD_MS     500U
+#define TELEMETRY_PERIOD_MS     100U
 
 #define DOOR_TIMER              TIMER5
-#define DOOR_OPEN_TIME_MS       3000U
+#define DOOR_OPEN_TIME_MS       500U
 
 #define DEBOUNCE_MS             50U
 #define RAMP_STEP_INTERVAL_MS   20U
